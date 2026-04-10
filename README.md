@@ -5,18 +5,32 @@
 **Team:** Uyen, Christabel, Morgan
 
 ## Overview
-A lightweight, fully local pipeline that processes weekly inventory CSVs for healthcare testing operations. 
 
-It combines **traditional ML** (Exponential Smoothing via statsmodels) for forecasting and anomaly detection with a **local LLM** (Llama 3.2 3B via Ollama) as the Risk Intelligence Layer to generate clear, actionable **Inventory Health & Risk Reports**.
+A lightweight, fully **local** pipeline designed for Open Healthcare’s testing operations supply chain. 
 
-**Key Achievements:**
-- Fully offline execution on CPU-only hardware (Intel i7 + 16 GB RAM)
-- End-to-end runtime: **~85 seconds** (well under 3-minute target)
-- Professional Markdown reports with prioritized recommendations and confidence scores
-- Human-in-the-loop design with clear disclaimers
+The system ingests weekly CSV files containing inventory levels, consumption, lead times, vendor fill rates, and SKU metadata. It then uses traditional ML for forecasting and anomaly detection, combined with a local LLM (Llama 3.2 3B via Ollama) as the **Risk Intelligence Layer**, to generate clear, actionable **Inventory Health & Risk Reports**.
 
-## Setup Instructions
+Fully offline, runs on standard CPU-only laptops (Intel i7 + 16 GB RAM), and completes in under **90 seconds**.
 
-1. Install Ollama and pull the model:
+## Key Features
+
+- Demand forecasting using Exponential Smoothing
+- Stockout prediction and risk scoring
+- Statistical anomaly detection (low fill rate, lead time spikes, consumption anomalies)
+- Inventory health KPIs (days of supply, turnover proxy, slow-moving flags)
+- Professional Markdown report with Executive Summary, Key Findings, Risks & Anomalies, Stockout Predictions, and **Prioritized Recommended Actions** with confidence scores
+- Clear disclaimer ensuring human-in-the-loop decision making
+
+## Demo Scenario
+
+The included `week_2026-04-13_demo.csv` simulates a real-world issue:  
+→ Vendor A fill rate drops sharply to **0.55**  
+→ Lead time spikes to **14 days** on a critical SKU  
+
+The system correctly identifies the risk and provides prioritized corrective actions.
+
+## Setup & Run (Fully Local)
+
+1. **Install Ollama** and pull the model:
    ```powershell
    ollama pull llama3.2:3b
