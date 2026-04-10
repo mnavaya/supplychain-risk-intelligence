@@ -1,0 +1,4 @@
+week,sku,inventory_level,consumption,lead_time_days,vendor_fill_rate,vendor_name,category,critical
+2026-04-13,TEST-SKU-001,1250,180,7,0.95,VendorA,Reagent,Yes
+2026-04-13,TEST-SKU-002,850,95,5,0.98,VendorB,Consumable,No
+2026-04-13,TEST-SKU-003,420,150,14,0.55,VendorA,Reagent,Yes

@@ -1,0 +1,4 @@
+sku,current_inventory,forecast_weekly_demand,days_to_stockout,lead_time_days,stockout_risk,vendor_fill_rate,vendor_name,critical,fill_rate_anomaly,lead_time_anomaly,consumption_spike,inventory_turnover_proxy,slow_moving,dead_stock_risk
+TEST-SKU-001,1250,180,48.6,7,Low,0.95,VendorA,Yes,No,No,No,0.14,No,Low
+TEST-SKU-002,850,95,62.6,5,Low,0.98,VendorB,No,No,No,No,0.11,No,Low
+TEST-SKU-003,420,150,19.6,12,Medium,0.72,VendorA,Yes,Yes,Yes,No,0.36,No,Low
