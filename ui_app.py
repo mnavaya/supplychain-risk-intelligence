@@ -69,36 +69,41 @@ a, a:visited,
   text-decoration-thickness: 2px;
 }
 
-/* Hero — compact, small, well formatted */
+/* Hero — big centered brand header */
 .hero {
-  padding: 1rem 0 0.95rem;
-  margin-bottom: 0.65rem;
+  padding: 1.6rem 0 1.2rem;
+  margin-bottom: 0.75rem;
   border-bottom: 1px solid var(--line);
+  text-align: center;
 }
 .brand-kicker {
-  margin: 0 0 0.5rem 0;
-  font-size: clamp(1.6rem, 3.2vw, 2.35rem);
-  letter-spacing: 0.04em;
+  margin: 0 0 0.65rem 0;
+  font-size: clamp(2.4rem, 6vw, 4.2rem);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: #ffffff !important;
-  font-weight: 700;
-  line-height: 1.15;
+  font-weight: 800;
+  line-height: 1.05;
+  text-align: center;
 }
 .brand-title {
-  margin: 0;
+  margin: 0 auto;
   font-size: 1.05rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: #ffffff !important;
   line-height: 1.35;
+  text-align: center;
+  max-width: 40rem;
 }
 .brand-sub {
-  margin: 0.35rem 0 0 0;
+  margin: 0.4rem auto 0;
   max-width: 40rem;
   color: #c4cad3 !important;
   font-size: 0.88rem;
   font-weight: 400;
   line-height: 1.5;
+  text-align: center;
 }
 
 .soft-panel {
