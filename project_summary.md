@@ -2,7 +2,6 @@
 
 **Local LLM-Powered Supply Chain Inventory Forecasting & Risk Intelligence Model**  
 **Graduate AI / Agentic Systems — SPS Corp 2026**  
-**Students:** Uyen, Christabel, Morgan  
 **Date:** April 10, 2026
 
 ## Project Overview

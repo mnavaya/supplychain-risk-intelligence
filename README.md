@@ -1,8 +1,7 @@
 # Supply Chain Inventory Forecasting & Risk Intelligence Model
 
 **Local LLM-Powered Hybrid System**  
-**Graduate AI / Agentic Systems — SPS Corp 2026**  
-**Team:** Uyen, Christabel, Morgan
+**Graduate AI / Agentic Systems — SPS Corp 2026**
 
 ## Overview
 
