@@ -87,23 +87,23 @@ a, a:visited,
   text-align: center;
 }
 .brand-title {
-  margin: 0 auto;
+  margin: 0.85rem 0 0 0;
   font-size: 1.05rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: #ffffff !important;
   line-height: 1.35;
-  text-align: center;
-  max-width: 40rem;
+  text-align: left;
+  max-width: none;
 }
 .brand-sub {
-  margin: 0.4rem auto 0;
+  margin: 0.4rem 0 0 0;
   max-width: 40rem;
   color: #c4cad3 !important;
   font-size: 0.88rem;
   font-weight: 400;
   line-height: 1.5;
-  text-align: center;
+  text-align: left;
 }
 
 .soft-panel {
