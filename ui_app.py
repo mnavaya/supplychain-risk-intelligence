@@ -69,35 +69,35 @@ a, a:visited,
   text-decoration-thickness: 2px;
 }
 
-/* Hero */
+/* Hero — compact, small, well formatted */
 .hero {
-  padding: 1.8rem 0 1.4rem;
-  margin-bottom: 0.75rem;
+  padding: 1rem 0 0.95rem;
+  margin-bottom: 0.65rem;
   border-bottom: 1px solid var(--line);
 }
 .brand-kicker {
-  margin: 0 0 0.7rem 0;
-  font-size: 0.72rem;
-  letter-spacing: 0.22em;
+  margin: 0 0 0.4rem 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--muted) !important;
   font-weight: 600;
 }
 .brand-title {
   margin: 0;
-  font-size: clamp(2.1rem, 4vw, 3rem);
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: #ffffff !important;
-  line-height: 1.12;
+  line-height: 1.35;
 }
 .brand-sub {
-  margin: 0.9rem 0 0 0;
-  max-width: 36rem;
-  color: #d5dae2 !important;
-  font-size: 1.08rem;
-  font-weight: 500;
-  line-height: 1.55;
+  margin: 0.35rem 0 0 0;
+  max-width: 40rem;
+  color: #c4cad3 !important;
+  font-size: 0.88rem;
+  font-weight: 400;
+  line-height: 1.5;
 }
 
 .soft-panel {
@@ -333,7 +333,7 @@ st.markdown(
     """
 <div class="hero">
   <p class="brand-kicker">Supply chain intelligence</p>
-  <p class="brand-title">Clear inventory risk,<br/>when you need it.</p>
+  <p class="brand-title">Clear inventory risk, when you need it.</p>
   <p class="brand-sub">Forecast demand, flag reorder breaches, and ask the copilot — all from your weekly CSV.</p>
 </div>
 """,
