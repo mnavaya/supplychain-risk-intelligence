@@ -3,7 +3,6 @@
 ## Local LLM-Powered Supply Chain Inventory Forecasting & Risk Intelligence Model  
 ### “Inventory Nook” — Graduate AI / Agentic Systems — SPS Corp 2026
 
-**Prepared for:** Course Instructor / Faculty Review  
 **Course context:** SPS Corp 2026 — Graduate AI / Agentic Systems  
 **Repository:** https://github.com/mnavaya/supplychain-risk-intelligence  
 **Live web application:** https://supplychain-risk-intelligence-ftw2mpf4jdpkqthyaeyloc.streamlit.app/  
@@ -19,7 +18,7 @@ This project delivers an end-to-end **hybrid AI system** for weekly inventory ri
 2. An optional **local Large Language Model (LLM)** layer (Gemma 2 2B via Ollama) that turns exception rows into a structured Markdown operations report, and  
 3. An interactive **rule-based inventory copilot** plus a polished **Streamlit web UI** (“Inventory Nook”) deployed publicly on Streamlit Community Cloud.
 
-The pipeline is designed to run **fully locally** on a standard laptop (CPU-only), with no requirement to send inventory data to a paid cloud LLM. A public demo URL is available for faculty review of the forecasting, risk board, metrics, and copilot. The narrative LLM report is generated when Ollama is running locally.
+The pipeline is designed to run **fully locally** on a standard laptop (CPU-only), with no requirement to send inventory data to a paid cloud LLM. A public demo URL is available for review of the forecasting, risk board, metrics, and copilot. The narrative LLM report is generated when Ollama is running locally.
 
 ---
 
@@ -167,7 +166,7 @@ This agent is **deterministic / rule-based** over the forecast summary table (fa
 
 ### 6.1 Design goals
 
-- Professional, dark, minimal aesthetic suitable for faculty demonstration  
+- Professional, dark, minimal aesthetic suitable for demonstration  
 - High-contrast controls (especially CSV upload and **Run analysis**)  
 - Clear note that LLM report requires local Ollama  
 
@@ -197,7 +196,7 @@ This agent is **deterministic / rule-based** over the forecast summary table (fa
 
 ---
 
-## 7. How to Run (for Faculty Reproduction)
+## 7. How to Run (Reproduction)
 
 ### 7.1 Environment
 
@@ -296,7 +295,7 @@ The design targets practical laptop use: small local model, exception-only promp
 
 ## 11. Conclusion
 
-This project demonstrates a practical **agentic / hybrid AI** pattern for supply chain operations: classical models provide trustworthy numbers; a local LLM optionally narrates exceptions; a UI and copilot make the system usable for demonstration and weekly workflows. The solution aligns with Minimal Tier goals—local execution, structured outputs, and human-in-the-loop decision making—while adding a polished public demo for faculty review.
+This project demonstrates a practical **agentic / hybrid AI** pattern for supply chain operations: classical models provide trustworthy numbers; a local LLM optionally narrates exceptions; a UI and copilot make the system usable for demonstration and weekly workflows. The solution aligns with Minimal Tier goals—local execution, structured outputs, and human-in-the-loop decision making—while adding a polished public demo.
 
 ---
 
