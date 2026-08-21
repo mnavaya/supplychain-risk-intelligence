@@ -12,23 +12,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Bright sky / lemon / coral — crisp daylight desk
+# Bold colourful desk — high-chroma panels + dark visible links
 st.markdown(
     """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Source+Sans+3:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Source+Sans+3:wght@400;600;700&display=swap');
 
 :root {
-  --ink: #12324a;
-  --muted: #4a6a80;
-  --accent: #00a8e8;
-  --accent-deep: #0077b6;
-  --sun: #ffe566;
-  --coral: #ff6b6b;
-  --panel: rgba(255, 255, 255, 0.92);
-  --line: rgba(0, 119, 182, 0.18);
-  --glow-sky: rgba(0, 200, 255, 0.35);
-  --glow-sun: rgba(255, 229, 102, 0.55);
+  --ink: #0b1f33;
+  --link: #061428;
+  --muted: #234058;
 }
 
 html, body, [class*="css"] {
@@ -36,124 +29,199 @@ html, body, [class*="css"] {
   color: var(--ink);
 }
 
+/* Links: bold + dark so they never wash out */
+a, a:visited, .stMarkdown a, [data-testid="stMarkdownContainer"] a {
+  color: var(--link) !important;
+  font-weight: 700 !important;
+  text-decoration: underline !important;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 2px;
+}
+a:hover, .stMarkdown a:hover {
+  color: #8b0000 !important;
+}
+
 .stApp {
   background:
-    radial-gradient(1000px 520px at 8% -8%, var(--glow-sky), transparent 55%),
-    radial-gradient(900px 480px at 92% 0%, var(--glow-sun), transparent 50%),
-    radial-gradient(700px 420px at 70% 100%, rgba(255, 107, 107, 0.18), transparent 55%),
-    linear-gradient(165deg, #e8f9ff 0%, #fffef5 45%, #ffe9f0 100%);
+    radial-gradient(900px 500px at 5% 0%, #7ce8ff 0%, transparent 55%),
+    radial-gradient(800px 460px at 95% 5%, #ffe566 0%, transparent 50%),
+    radial-gradient(700px 480px at 50% 100%, #ff8fab 0%, transparent 55%),
+    radial-gradient(600px 400px at 15% 80%, #b8f2a0 0%, transparent 50%),
+    linear-gradient(145deg, #4cc9f0 0%, #80ffdb 28%, #ffd60a 58%, #ff6b6b 100%);
+  background-attachment: fixed;
 }
 
 [data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #ffffff 0%, #e6f8ff 55%, #fff7c2 100%);
-  border-right: 1px solid var(--line);
+  background: linear-gradient(185deg, #3a0ca3 0%, #4361ee 40%, #4cc9f0 78%, #80ffdb 100%) !important;
+  border-right: 4px solid #061428;
 }
-
 [data-testid="stSidebar"] * {
-  color: var(--ink) !important;
+  color: #061428 !important;
+  font-weight: 600 !important;
 }
-
-h1, h2, h3, .brand-title {
-  font-family: "Fraunces", Georgia, serif !important;
-  letter-spacing: -0.02em;
-  color: var(--ink) !important;
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span {
+  color: #061428 !important;
+}
+[data-testid="stSidebar"] a {
+  color: #061428 !important;
+  font-weight: 800 !important;
 }
 
 .hero {
-  padding: 0.4rem 0 1.2rem 0;
-  margin-bottom: 0.5rem;
-  border-bottom: 2px solid rgba(0, 168, 232, 0.25);
+  background: linear-gradient(120deg, #560bad 0%, #f72585 35%, #ff9e00 70%, #ffd60a 100%);
+  border: 4px solid #061428;
+  border-radius: 22px;
+  padding: 1.35rem 1.5rem 1.45rem;
+  margin-bottom: 1.1rem;
+  box-shadow: 8px 8px 0 #061428;
 }
 
 .brand-title {
-  font-size: 2.35rem;
-  font-weight: 650;
+  font-family: "Fraunces", Georgia, serif !important;
+  font-size: 2.55rem;
+  font-weight: 700;
   margin: 0;
-  line-height: 1.15;
-  background: linear-gradient(90deg, #0077b6 0%, #00a8e8 45%, #ff6b6b 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent !important;
+  line-height: 1.1;
+  color: #ffffff !important;
+  text-shadow: 2px 2px 0 #061428;
 }
 
 .brand-sub {
-  margin: 0.45rem 0 0 0;
-  color: var(--muted);
-  font-size: 1.05rem;
-  max-width: 38rem;
+  margin: 0.55rem 0 0 0;
+  color: #fff8e7 !important;
+  font-size: 1.08rem;
+  font-weight: 600;
+  max-width: 42rem;
 }
 
+.color-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.85rem 0 1.1rem;
+}
+.color-strip span {
+  display: inline-block;
+  padding: 0.28rem 0.75rem;
+  border-radius: 999px;
+  border: 2px solid #061428;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #061428;
+  box-shadow: 2px 2px 0 #061428;
+}
+.chip-blue { background: #4cc9f0; }
+.chip-green { background: #80ffdb; }
+.chip-yellow { background: #ffd60a; }
+.chip-pink { background: #ff8fab; }
+.chip-orange { background: #ff9e00; }
+
 .soft-panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 18px;
+  background: #fff3b0;
+  border: 3px solid #061428;
+  border-radius: 16px;
   padding: 1rem 1.15rem;
-  box-shadow: 0 12px 28px rgba(0, 119, 182, 0.08);
-  backdrop-filter: blur(6px);
+  box-shadow: 5px 5px 0 #061428;
+  font-weight: 600;
+}
+
+/* Each metric gets a loud colour via nth-child */
+div[data-testid="stHorizontalBlock"] > div:nth-child(1) div[data-testid="stMetric"] {
+  background: #4cc9f0 !important;
+}
+div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"] {
+  background: #ff9e00 !important;
+}
+div[data-testid="stHorizontalBlock"] > div:nth-child(3) div[data-testid="stMetric"] {
+  background: #ff6b6b !important;
+}
+div[data-testid="stHorizontalBlock"] > div:nth-child(4) div[data-testid="stMetric"] {
+  background: #80ffdb !important;
 }
 
 div[data-testid="stMetric"] {
-  background: linear-gradient(180deg, #ffffff 0%, #f0fbff 100%);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 0.85rem 1rem;
-  box-shadow: 0 8px 22px rgba(0, 168, 232, 0.12);
+  border: 3px solid #061428 !important;
+  border-radius: 16px !important;
+  padding: 0.95rem 1rem !important;
+  box-shadow: 5px 5px 0 #061428;
 }
-
 div[data-testid="stMetric"] label {
-  color: var(--muted) !important;
+  color: #061428 !important;
+  font-weight: 700 !important;
 }
-
 div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-  color: var(--accent-deep) !important;
+  color: #061428 !important;
+  font-weight: 800 !important;
 }
 
 .stButton > button {
-  background: linear-gradient(135deg, #00a8e8 0%, #0077b6 100%) !important;
+  background: linear-gradient(135deg, #f72585 0%, #7209b7 55%, #3a0ca3 100%) !important;
   color: #ffffff !important;
-  border: none !important;
-  border-radius: 12px !important;
-  font-weight: 600 !important;
-  padding: 0.55rem 1rem !important;
-  box-shadow: 0 8px 18px rgba(0, 168, 232, 0.35);
+  border: 3px solid #061428 !important;
+  border-radius: 14px !important;
+  font-weight: 800 !important;
+  padding: 0.65rem 1rem !important;
+  box-shadow: 4px 4px 0 #061428 !important;
 }
-
 .stButton > button:hover {
-  background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%) !important;
-  box-shadow: 0 8px 18px rgba(255, 107, 107, 0.35);
+  background: linear-gradient(135deg, #ffd60a 0%, #ff9e00 100%) !important;
+  color: #061428 !important;
 }
 
 .stTabs [data-baseweb="tab-list"] {
-  gap: 0.4rem;
+  gap: 0.5rem;
   background: transparent;
 }
-
 .stTabs [data-baseweb="tab"] {
-  background: rgba(255, 255, 255, 0.85);
+  background: #ffffff;
   border-radius: 999px;
-  padding: 0.35rem 1rem;
-  border: 1px solid var(--line);
+  padding: 0.4rem 1.05rem;
+  border: 3px solid #061428 !important;
+  font-weight: 700 !important;
+  color: #061428 !important;
+  box-shadow: 3px 3px 0 #061428;
 }
-
+.stTabs [data-baseweb="tab"]:nth-child(1) { background: #4cc9f0 !important; }
+.stTabs [data-baseweb="tab"]:nth-child(2) { background: #80ffdb !important; }
+.stTabs [data-baseweb="tab"]:nth-child(3) { background: #ffd60a !important; }
+.stTabs [data-baseweb="tab"]:nth-child(4) { background: #ff8fab !important; }
 .stTabs [aria-selected="true"] {
-  background: linear-gradient(135deg, #ffe566 0%, #ffd166 100%) !important;
-  color: #12324a !important;
-  font-weight: 600;
-  border-color: rgba(255, 209, 102, 0.9) !important;
+  transform: translateY(-2px);
+  box-shadow: 4px 4px 0 #061428 !important;
 }
 
 [data-testid="stChatMessage"] {
-  background: var(--panel);
-  border: 1px solid var(--line);
+  background: #e7f5ff !important;
+  border: 3px solid #061428 !important;
   border-radius: 16px;
-  padding: 0.35rem 0.6rem;
-  box-shadow: 0 6px 16px rgba(0, 168, 232, 0.08);
+  padding: 0.4rem 0.65rem;
+  box-shadow: 4px 4px 0 #061428;
+}
+
+/* Report / markdown headings pop */
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3 {
+  color: #061428 !important;
+  font-weight: 800 !important;
 }
 
 .footer-note {
   margin-top: 1.5rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+  color: #061428;
+  font-size: 0.95rem;
+  font-weight: 700;
+  background: #ffd60a;
+  display: inline-block;
+  padding: 0.35rem 0.8rem;
+  border: 2px solid #061428;
+  border-radius: 999px;
+  box-shadow: 2px 2px 0 #061428;
 }
 </style>
 """,
@@ -222,7 +290,14 @@ st.markdown(
     """
 <div class="hero">
   <p class="brand-title">Inventory Nook</p>
-  <p class="brand-sub">A quiet desk for weekly stock health — forecasts, reorder alerts, and a calm copilot for your shift.</p>
+  <p class="brand-sub">Colourful weekly stock health — forecasts, reorder alerts, and a live copilot for your shift.</p>
+</div>
+<div class="color-strip">
+  <span class="chip-blue">Forecasts</span>
+  <span class="chip-orange">Reorder points</span>
+  <span class="chip-pink">Risk flags</span>
+  <span class="chip-yellow">ABC classes</span>
+  <span class="chip-green">Live copilot</span>
 </div>
 """,
     unsafe_allow_html=True,
