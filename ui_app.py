@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Starlink-inspired: dark, plain, high-contrast — no rainbow
+# Dark minimal UI — high contrast on circled controls / upload / button / hero
 st.markdown(
     """
 <style>
@@ -20,13 +20,12 @@ st.markdown(
 
 :root {
   --bg: #0b0d10;
-  --bg-mid: #141820;
   --panel: #1a1f28;
-  --panel-2: #222833;
-  --line: #3a4250;
+  --panel-2: #262c38;
+  --line: #4a5260;
   --text: #f5f6f7;
-  --muted: #a8b0bc;
-  --link: #e8eaed;
+  --muted: #b6bec9;
+  --link: #ffffff;
 }
 
 html, body, [class*="css"] {
@@ -36,70 +35,69 @@ html, body, [class*="css"] {
 
 .stApp {
   background:
-    radial-gradient(1200px 700px at 50% 0%, #1a2333 0%, transparent 55%),
-    linear-gradient(180deg, #0b0d10 0%, #12161e 50%, #0b0d10 100%);
-}
-
-/* Main text */
-.stMarkdown, .stCaption, label, p, span, div {
-  color: var(--text);
+    radial-gradient(1100px 650px at 50% -10%, #1c2433 0%, transparent 55%),
+    linear-gradient(180deg, #0b0d10 0%, #12161e 55%, #0b0d10 100%);
 }
 
 [data-testid="stSidebar"] {
   background: #0e1117 !important;
   border-right: 1px solid var(--line);
 }
-[data-testid="stSidebar"] * {
-  color: var(--text) !important;
+
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+  color: #ffffff !important;
 }
+
 [data-testid="stSidebar"] .stCaption,
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] * {
   color: var(--muted) !important;
 }
 
-/* Links: bold, light, clearly visible on dark */
+/* Links */
 a, a:visited,
 .stMarkdown a,
-[data-testid="stMarkdownContainer"] a,
-[data-testid="stSidebar"] a {
+[data-testid="stMarkdownContainer"] a {
   color: var(--link) !important;
   font-weight: 700 !important;
   text-decoration: underline !important;
   text-underline-offset: 3px;
   text-decoration-thickness: 2px;
 }
-a:hover, .stMarkdown a:hover {
-  color: #ffffff !important;
-}
 
+/* Hero */
 .hero {
-  padding: 2.2rem 0 1.6rem;
-  margin-bottom: 0.5rem;
+  padding: 1.8rem 0 1.4rem;
+  margin-bottom: 0.75rem;
   border-bottom: 1px solid var(--line);
 }
 .brand-kicker {
-  margin: 0 0 0.75rem 0;
+  margin: 0 0 0.7rem 0;
   font-size: 0.72rem;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--muted) !important;
   font-weight: 600;
 }
 .brand-title {
   margin: 0;
-  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  font-size: clamp(2.1rem, 4vw, 3rem);
   font-weight: 700;
   letter-spacing: -0.03em;
   color: #ffffff !important;
-  line-height: 1.1;
+  line-height: 1.12;
 }
 .brand-sub {
-  margin: 0.85rem 0 0 0;
-  max-width: 34rem;
-  color: var(--muted) !important;
-  font-size: 1.05rem;
-  font-weight: 400;
-  line-height: 1.5;
+  margin: 0.9rem 0 0 0;
+  max-width: 36rem;
+  color: #d5dae2 !important;
+  font-size: 1.08rem;
+  font-weight: 500;
+  line-height: 1.55;
 }
 
 .soft-panel {
@@ -110,7 +108,23 @@ a:hover, .stMarkdown a:hover {
   color: var(--text);
 }
 
-/* Metrics — quiet dark panels */
+.sidebar-card {
+  background: #171b22;
+  border: 1px solid #5a6475;
+  border-radius: 12px;
+  padding: 0.85rem 0.9rem 1rem;
+  margin: 0 0 0.9rem 0;
+}
+.sidebar-card-title {
+  margin: 0 0 0.55rem 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #ffffff !important;
+  font-weight: 700;
+}
+
+/* Metrics */
 div[data-testid="stMetric"] {
   background: var(--panel) !important;
   border: 1px solid var(--line) !important;
@@ -119,7 +133,7 @@ div[data-testid="stMetric"] {
 }
 div[data-testid="stMetric"] label {
   color: var(--muted) !important;
-  font-weight: 500 !important;
+  font-weight: 600 !important;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 0.72rem !important;
@@ -129,20 +143,31 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
   font-weight: 700 !important;
 }
 
+/* Primary button — dark text on white (fix invisible label) */
+[data-testid="stSidebar"] .stButton > button,
 .stButton > button {
   background: #ffffff !important;
   color: #0b0d10 !important;
-  border: none !important;
+  border: 2px solid #ffffff !important;
   border-radius: 999px !important;
-  font-weight: 700 !important;
-  padding: 0.65rem 1.1rem !important;
-  letter-spacing: 0.02em;
+  font-weight: 800 !important;
+  font-size: 1rem !important;
+  padding: 0.7rem 1.1rem !important;
 }
+[data-testid="stSidebar"] .stButton > button *,
+[data-testid="stSidebar"] .stButton > button p,
+[data-testid="stSidebar"] .stButton > button span,
+.stButton > button * {
+  color: #0b0d10 !important;
+  font-weight: 800 !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover,
 .stButton > button:hover {
-  background: #d7dbe2 !important;
+  background: #e8ebf0 !important;
   color: #0b0d10 !important;
 }
 
+/* Tabs */
 .stTabs [data-baseweb="tab-list"] {
   gap: 0.35rem;
   border-bottom: 1px solid var(--line);
@@ -173,55 +198,55 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
   font-weight: 700 !important;
 }
 
-/* Inputs / selects readable on dark */
-[data-testid="stSidebar"] input,
-[data-testid="stSidebar"] textarea,
+/* Select / slider readable */
 [data-testid="stSidebar"] [data-baseweb="select"] > div {
-  background-color: var(--panel-2) !important;
-  color: #ffffff !important;
-  border-color: var(--line) !important;
+  background-color: #ffffff !important;
+  color: #0b0d10 !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 8px !important;
+  min-height: 42px;
+}
+[data-testid="stSidebar"] [data-baseweb="select"] * {
+  color: #0b0d10 !important;
+}
+[data-testid="stSidebar"] [data-baseweb="select"] svg {
+  fill: #0b0d10 !important;
 }
 
-/* FILE UPLOAD — high visibility drop zone */
+/* Toggle label readable */
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
+  color: #ffffff !important;
+  font-weight: 600 !important;
+}
+
+/* FILE UPLOADER — bright card that cannot blend into dark sidebar */
 [data-testid="stSidebar"] [data-testid="stFileUploader"] {
-  background: #f5f6f7 !important;
+  background: #ffffff !important;
   border: 2px solid #ffffff !important;
   border-radius: 12px !important;
-  padding: 0.85rem 0.9rem 1rem !important;
-  box-shadow: 0 0 0 1px #0b0d10 inset;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] * {
-  color: #0b0d10 !important;
+  padding: 0.75rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stFileUploader"] label,
 [data-testid="stSidebar"] [data-testid="stFileUploader"] span,
 [data-testid="stSidebar"] [data-testid="stFileUploader"] small,
-[data-testid="stSidebar"] [data-testid="stFileUploader"] p {
+[data-testid="stSidebar"] [data-testid="stFileUploader"] p,
+[data-testid="stSidebar"] [data-testid="stFileUploader"] div {
   color: #0b0d10 !important;
-  font-weight: 600 !important;
 }
-[data-testid="stSidebar"] [data-testid="stFileUploader"] section,
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
-  background: #ffffff !important;
-  border: 2px dashed #3a4250 !important;
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+[data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+  background: #f0f2f5 !important;
+  border: 2px dashed #0b0d10 !important;
   border-radius: 10px !important;
-  padding: 1.1rem 0.75rem !important;
+  padding: 1.15rem 0.8rem !important;
 }
-[data-testid="stSidebar"] [data-testid="stFileUploader"] button {
+[data-testid="stSidebar"] [data-testid="stFileUploader"] button,
+[data-testid="stSidebar"] [data-testid="stFileUploader"] button * {
   background: #0b0d10 !important;
   color: #ffffff !important;
   border: none !important;
   font-weight: 700 !important;
   border-radius: 999px !important;
-}
-
-.upload-label {
-  margin: 1rem 0 0.45rem 0;
-  font-size: 0.72rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: #ffffff !important;
-  font-weight: 700;
 }
 
 .footer-note {
@@ -268,7 +293,10 @@ def _risk_sort_key(series: pd.Series) -> pd.Series:
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.markdown("### Controls")
+    st.markdown(
+        '<div class="sidebar-card"><p class="sidebar-card-title">Controls</p></div>',
+        unsafe_allow_html=True,
+    )
     file_options = _available_weekly_files()
     selected_file = st.selectbox(
         "Weekly CSV",
@@ -277,12 +305,14 @@ with st.sidebar:
         placeholder="No CSV files in data/weekly",
     )
 
-    st.markdown('<p class="upload-label">Upload file</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="sidebar-card-title" style="margin-top:1rem;">Upload file</p>',
+        unsafe_allow_html=True,
+    )
     uploaded_csv = st.file_uploader(
-        "Drag and drop a CSV here",
+        "Drag & drop CSV here — or browse",
         type=["csv"],
         help="Upload a weekly inventory CSV to analyze.",
-        label_visibility="visible",
     )
 
     forecast_weeks = st.slider("Forecast horizon (weeks)", 2, 16, 8)
@@ -290,9 +320,7 @@ with st.sidebar:
     run_button = st.button("Run analysis", type="primary", use_container_width=True)
 
     st.markdown("---")
-    st.caption(
-        "Holt-Winters demand · safety stock · reorder points · ABC class"
-    )
+    st.caption("Holt-Winters · safety stock · reorder points · ABC class")
 
 
 if uploaded_csv is not None:
