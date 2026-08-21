@@ -252,8 +252,10 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
 .footer-note {
   margin-top: 2rem;
   color: var(--muted);
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  font-weight: 400;
 }
 </style>
 """,
@@ -457,6 +459,6 @@ with tabs[3]:
 
 
 st.markdown(
-    '<p class="footer-note">Inventory Nook · local supply-chain pipeline</p>',
+    '<p class="footer-note">All rights reserved — Morgan 2026</p>',
     unsafe_allow_html=True,
 )
