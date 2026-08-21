@@ -76,12 +76,13 @@ a, a:visited,
   border-bottom: 1px solid var(--line);
 }
 .brand-kicker {
-  margin: 0 0 0.4rem 0;
-  font-size: 0.68rem;
-  letter-spacing: 0.2em;
+  margin: 0 0 0.5rem 0;
+  font-size: clamp(1.6rem, 3.2vw, 2.35rem);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--muted) !important;
-  font-weight: 600;
+  color: #ffffff !important;
+  font-weight: 700;
+  line-height: 1.15;
 }
 .brand-title {
   margin: 0;
