@@ -2,3 +2,5 @@ pandas
 numpy
 statsmodels
 ollama
+streamlit
+scikit-learn

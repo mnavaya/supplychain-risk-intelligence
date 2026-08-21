@@ -6,31 +6,57 @@
 
 ## Overview
 
-A lightweight, fully **local** pipeline designed for Open Healthcare’s testing operations supply chain. 
+A lightweight, fully **local** pipeline designed for Open Healthcare’s testing operations supply chain.
 
-The system ingests weekly CSV files containing inventory levels, consumption, lead times, vendor fill rates, and SKU metadata. It then uses traditional ML for forecasting and anomaly detection, combined with a local LLM (Llama 3.2 3B via Ollama) as the **Risk Intelligence Layer**, to generate clear, actionable **Inventory Health & Risk Reports**.
+The system ingests weekly CSV files containing inventory levels, consumption, lead times, vendor fill rates, and SKU metadata. It forecasts demand, computes safety stock and reorder points, scores stockout risk, and can generate an actionable **Inventory Health & Risk Report** with a local LLM.
 
-Fully offline, runs on standard CPU-only laptops (Intel i7 + 16 GB RAM), and completes in under **90 seconds**.
+## Setup
 
-## Key Features
+```bash
+pip install -r requirements.txt
+```
 
-- Demand forecasting using Exponential Smoothing
-- Stockout prediction and risk scoring
-- Statistical anomaly detection (low fill rate, lead time spikes, consumption anomalies)
-- Inventory health KPIs (days of supply, turnover proxy, slow-moving flags)
-- Professional Markdown report with Executive Summary, Key Findings, Risks & Anomalies, Stockout Predictions, and **Prioritized Recommended Actions** with confidence scores
-- Clear disclaimer ensuring human-in-the-loop decision making
+For LLM reports, install [Ollama](https://ollama.com) and pull:
 
-## Demo Scenario
+```bash
+ollama pull gemma2:2b
+```
 
-The included `week_2026-04-13_demo.csv` simulates a real-world issue:  
-→ Vendor A fill rate drops sharply to **0.55**  
-→ Lead time spikes to **14 days** on a critical SKU  
+## Run
 
-The system correctly identifies the risk and provides prioritized corrective actions.
+**CLI pipeline + terminal copilot**
 
-## Setup & Run (Fully Local)
+```bash
+python main.py
+```
 
-1. **Install Ollama** and pull the model:
-   ```powershell
-   ollama pull llama3.2:3b
+**Web UI (Inventory Nook)**
+
+```bash
+streamlit run ui_app.py
+```
+
+Legacy paths still work: `python src/main.py` and `streamlit run src/ui_app.py`.
+
+## Deploy the frontend (public URL)
+
+1. Push this repo to GitHub (`mnavaya/supplychain-risk-intelligence`).
+2. Open [Streamlit Community Cloud](https://share.streamlit.io/) and sign in with GitHub.
+3. **New app** → pick this repo → **Main file path:** `ui_app.py` → Deploy.
+4. Your live URL will look like: `https://<app-name>.streamlit.app`
+
+Notes for the cloud app:
+- Forecasts, risk board, and the rule-based **Copilot** work without Ollama.
+- The LLM written report needs a local Ollama instance, so turn **Generate LLM report** off in the sidebar on Streamlit Cloud (or leave it on — you’ll get a friendly error in the report tab).
+
+## What it does
+
+- Cleans weekly inventory CSVs from `data/weekly/`
+- Forecasts demand (Holt-Winters), computes safety stock & reorder points
+- ABC-classifies SKUs and flags stockout risk
+- Writes `outputs/latest_summary.csv` and `outputs/reports/Inventory_Health_Risk_Report.md`
+- Chat with a rule-based inventory copilot in the CLI or UI
+
+## Demo data
+
+`data/weekly/week_2026-04-13_demo.csv` is included for a quick walkthrough of risk flags and the copilot.
