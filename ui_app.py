@@ -322,7 +322,7 @@ with st.sidebar:
     run_button = st.button("Run analysis", type="primary", use_container_width=True)
 
     st.markdown("---")
-    st.caption("Holt-Winters · safety stock · reorder points · ABC class")
+    st.caption("Inventory Nook — Local supply chain pipeline")
 
 
 if uploaded_csv is not None:
