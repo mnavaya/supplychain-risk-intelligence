@@ -257,6 +257,27 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
   text-transform: none;
   font-weight: 400;
 }
+
+.note-box {
+  margin: 0.75rem 0 0.9rem 0;
+  padding: 0.75rem 0.85rem;
+  background: #1a2030;
+  border: 1px solid #5a6475;
+  border-left: 3px solid #ffffff;
+  border-radius: 8px;
+  color: #d5dae2 !important;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  font-weight: 400;
+}
+.note-box strong {
+  color: #ffffff !important;
+  font-weight: 700;
+}
+.note-box a {
+  color: #ffffff !important;
+  font-weight: 700 !important;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -319,6 +340,18 @@ with st.sidebar:
 
     forecast_weeks = st.slider("Forecast horizon (weeks)", 2, 16, 8)
     with_report = st.toggle("Generate LLM report", value=False)
+    st.markdown(
+        """
+<div class="note-box">
+  <strong>Note:</strong> The written LLM report needs <strong>Ollama</strong> running locally with <strong>gemma2:2b</strong>.
+  On Streamlit Cloud this is expected to fail — leave this toggle off.
+  Forecasts, the risk board, metrics, and the Copilot still work without Ollama.
+  For the full report: install Ollama from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a>,
+  run <code>ollama pull gemma2:2b</code>, then use this app on your laptop with the toggle on.
+</div>
+""",
+        unsafe_allow_html=True,
+    )
     run_button = st.button("Run analysis", type="primary", use_container_width=True)
 
     st.markdown("---")
