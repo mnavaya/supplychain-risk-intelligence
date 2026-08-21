@@ -12,22 +12,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Soft sage / warm stone — calm ops desk, not generic purple dashboard
+# Bright sky / lemon / coral — crisp daylight desk
 st.markdown(
     """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Source+Sans+3:wght@400;500;600&display=swap');
 
 :root {
-  --ink: #2c332e;
-  --muted: #5c675f;
-  --sage: #6b8f71;
-  --sage-deep: #4f6f55;
-  --mist: #e8efe6;
-  --cream: #f3f0ea;
-  --panel: rgba(255, 252, 247, 0.88);
-  --line: rgba(79, 111, 85, 0.18);
-  --glow: rgba(107, 143, 113, 0.22);
+  --ink: #12324a;
+  --muted: #4a6a80;
+  --accent: #00a8e8;
+  --accent-deep: #0077b6;
+  --sun: #ffe566;
+  --coral: #ff6b6b;
+  --panel: rgba(255, 255, 255, 0.92);
+  --line: rgba(0, 119, 182, 0.18);
+  --glow-sky: rgba(0, 200, 255, 0.35);
+  --glow-sun: rgba(255, 229, 102, 0.55);
 }
 
 html, body, [class*="css"] {
@@ -37,13 +38,14 @@ html, body, [class*="css"] {
 
 .stApp {
   background:
-    radial-gradient(1200px 600px at 12% -10%, var(--glow), transparent 55%),
-    radial-gradient(900px 500px at 88% 8%, rgba(196, 168, 125, 0.18), transparent 50%),
-    linear-gradient(165deg, #eef3ec 0%, #f6f3ed 48%, #ebe6dc 100%);
+    radial-gradient(1000px 520px at 8% -8%, var(--glow-sky), transparent 55%),
+    radial-gradient(900px 480px at 92% 0%, var(--glow-sun), transparent 50%),
+    radial-gradient(700px 420px at 70% 100%, rgba(255, 107, 107, 0.18), transparent 55%),
+    linear-gradient(165deg, #e8f9ff 0%, #fffef5 45%, #ffe9f0 100%);
 }
 
 [data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #f7f4ee 0%, #e9efe7 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #e6f8ff 55%, #fff7c2 100%);
   border-right: 1px solid var(--line);
 }
 
@@ -60,7 +62,7 @@ h1, h2, h3, .brand-title {
 .hero {
   padding: 0.4rem 0 1.2rem 0;
   margin-bottom: 0.5rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 2px solid rgba(0, 168, 232, 0.25);
 }
 
 .brand-title {
@@ -68,6 +70,10 @@ h1, h2, h3, .brand-title {
   font-weight: 650;
   margin: 0;
   line-height: 1.15;
+  background: linear-gradient(90deg, #0077b6 0%, #00a8e8 45%, #ff6b6b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
 }
 
 .brand-sub {
@@ -82,34 +88,39 @@ h1, h2, h3, .brand-title {
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 1rem 1.15rem;
-  box-shadow: 0 10px 30px rgba(44, 51, 46, 0.05);
+  box-shadow: 0 12px 28px rgba(0, 119, 182, 0.08);
   backdrop-filter: blur(6px);
 }
 
 div[data-testid="stMetric"] {
-  background: var(--panel);
+  background: linear-gradient(180deg, #ffffff 0%, #f0fbff 100%);
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 0.85rem 1rem;
-  box-shadow: 0 8px 24px rgba(44, 51, 46, 0.04);
+  box-shadow: 0 8px 22px rgba(0, 168, 232, 0.12);
 }
 
 div[data-testid="stMetric"] label {
   color: var(--muted) !important;
 }
 
+div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+  color: var(--accent-deep) !important;
+}
+
 .stButton > button {
-  background: var(--sage-deep) !important;
-  color: #f7faf6 !important;
+  background: linear-gradient(135deg, #00a8e8 0%, #0077b6 100%) !important;
+  color: #ffffff !important;
   border: none !important;
   border-radius: 12px !important;
   font-weight: 600 !important;
   padding: 0.55rem 1rem !important;
-  box-shadow: 0 6px 16px rgba(79, 111, 85, 0.25);
+  box-shadow: 0 8px 18px rgba(0, 168, 232, 0.35);
 }
 
 .stButton > button:hover {
-  background: var(--sage) !important;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%) !important;
+  box-shadow: 0 8px 18px rgba(255, 107, 107, 0.35);
 }
 
 .stTabs [data-baseweb="tab-list"] {
@@ -118,16 +129,17 @@ div[data-testid="stMetric"] label {
 }
 
 .stTabs [data-baseweb="tab"] {
-  background: rgba(255, 252, 247, 0.7);
+  background: rgba(255, 255, 255, 0.85);
   border-radius: 999px;
   padding: 0.35rem 1rem;
   border: 1px solid var(--line);
 }
 
 .stTabs [aria-selected="true"] {
-  background: var(--mist) !important;
-  color: var(--sage-deep) !important;
+  background: linear-gradient(135deg, #ffe566 0%, #ffd166 100%) !important;
+  color: #12324a !important;
   font-weight: 600;
+  border-color: rgba(255, 209, 102, 0.9) !important;
 }
 
 [data-testid="stChatMessage"] {
@@ -135,6 +147,7 @@ div[data-testid="stMetric"] label {
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 0.35rem 0.6rem;
+  box-shadow: 0 6px 16px rgba(0, 168, 232, 0.08);
 }
 
 .footer-note {
