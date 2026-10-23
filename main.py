@@ -24,11 +24,50 @@ from inventory_logic import (
 
 warnings.filterwarnings("ignore")
 
-# Directory setup
+# Directory setup. Cloud disks can reject writes; the UI still runs from memory.
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data" / "weekly"
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "reports"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GEMMA_MODEL = "gemma2:2b"
+# A missing local model must fail fast instead of hanging a public demo.
+GEMMA_TIMEOUT_SECONDS = 8.0
+
+
+def _ensure_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _write_text(path: Path, text: str) -> bool:
+    if not _ensure_dir(path.parent):
+        return False
+    try:
+        path.write_text(text, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _write_csv(frame: pd.DataFrame, path: Path) -> bool:
+    if not _ensure_dir(path.parent):
+        return False
+    try:
+        frame.to_csv(path, index=False)
+        return True
+    except OSError:
+        return False
+
+
+_ensure_dir(OUTPUT_DIR)
+
+
+def _gemma_chat(messages):
+    """Call local Gemma 2. Times out quickly when Ollama is not running."""
+    client = ollama.Client(timeout=GEMMA_TIMEOUT_SECONDS)
+    return client.chat(model=GEMMA_MODEL, messages=messages)
 
 # Default service-level factor (95%). Other levels live in SERVICE_LEVELS.
 Z_SCORE = SERVICE_LEVELS[DEFAULT_SERVICE_LEVEL]
@@ -187,22 +226,20 @@ Write a clean Markdown report with these precise operational sections:
     print("🤖 Processing telemetry exceptions with Gemma 2 (2B)...")
     start = time.time()
     try:
-        response = ollama.chat(
-            model="gemma2:2b", messages=[{"role": "user", "content": prompt}]
-        )
+        response = _gemma_chat([{"role": "user", "content": prompt}])
         report = response["message"]["content"]
     except Exception as e:
         report = (
             f"# Operational Health Report\n\n"
             f"*Error connecting to Gemma 2 model: {str(e)}*\n\n"
-            f"Data summary saved locally."
+            f"Forecasts and the risk board are still available without the model."
         )
 
     report_path = OUTPUT_DIR / "Inventory_Health_Risk_Report.md"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report)
-
-    print(f"✅ Report compiled in {time.time() - start:.1f} seconds → {report_path}")
+    if _write_text(report_path, report):
+        print(f"✅ Report compiled in {time.time() - start:.1f} seconds → {report_path}")
+    else:
+        print(f"✅ Report ready in memory in {time.time() - start:.1f} seconds (disk write skipped).")
     return report
 
 
@@ -245,10 +282,7 @@ Worst SKUs:
 {table}
 """
     try:
-        response = ollama.chat(
-            model="gemma2:2b",
-            messages=[{"role": "user", "content": prompt}],
-        )
+        response = _gemma_chat([{"role": "user", "content": prompt}])
         narrative = (response.get("message") or {}).get("content") or ""
         narrative = narrative.strip()
         if not narrative:
@@ -352,7 +386,8 @@ def run_pipeline(
         service_level=service_level,
     )
     summary_path = OUTPUT_DIR.parent / "latest_summary.csv"
-    forecast_df.to_csv(summary_path, index=False)
+    if not _write_csv(forecast_df, summary_path):
+        summary_path = None
 
     report = generate_llm_report(forecast_df) if generate_report else ""
 

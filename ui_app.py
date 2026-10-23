@@ -1,6 +1,7 @@
 import altair as alt
 import streamlit as st
 import pandas as pd
+from pathlib import Path
 
 from inventory_logic import (
     DEFAULT_SERVICE_LEVEL,
@@ -310,17 +311,31 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
 )
 
 
+def _is_inventory_csv(path):
+    """True when the first line looks like a weekly inventory file."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            header = handle.readline()
+    except OSError:
+        return False
+    columns = {part.strip().lower() for part in header.split(",")}
+    return {"sku", "consumption", "inventory_level"}.issubset(columns)
+
+
 def _available_weekly_files():
     if not DATA_DIR.exists():
         return []
-    return sorted(p.name for p in DATA_DIR.glob("*.csv"))
+    return sorted(p.name for p in DATA_DIR.glob("*.csv") if _is_inventory_csv(p))
 
 
 def _save_uploaded_csv(uploaded_file):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    destination = DATA_DIR / uploaded_file.name
-    destination.write_bytes(uploaded_file.getvalue())
-    return destination.name
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        destination = DATA_DIR / Path(uploaded_file.name).name
+        destination.write_bytes(uploaded_file.getvalue())
+        return destination.name
+    except OSError:
+        return None
 
 
 def _load_existing_summary():
@@ -463,8 +478,12 @@ with st.sidebar:
 
 
 if uploaded_csv is not None:
-    selected_file = _save_uploaded_csv(uploaded_csv)
-    st.toast(f"Saved {selected_file}", icon="📎")
+    saved_name = _save_uploaded_csv(uploaded_csv)
+    if saved_name:
+        selected_file = saved_name
+        st.toast(f"Saved {selected_file}", icon="📎")
+    else:
+        st.error("Could not save that upload. Use the bundled sample CSV instead.")
 
 
 # ---------- Hero ----------

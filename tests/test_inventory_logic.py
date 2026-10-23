@@ -548,20 +548,29 @@ class SupplyShockTests(unittest.TestCase):
         self.assertIn("higher stockout risk", text)
         self.assertIn("SKU-A", text)
 
-        with patch("main.ollama.chat", side_effect=ConnectionError("connection refused")):
+        with patch("main._gemma_chat", side_effect=ConnectionError("connection refused")):
             told = generate_scenario_narrative(shock, 3, 0, 1)
         self.assertEqual(told["source"], "rule")
         self.assertEqual(told["narrative"], text)
         self.assertIn("connection refused", told["error"])
 
         with patch(
-            "main.ollama.chat",
+            "main._gemma_chat",
             return_value={"message": {"content": " Order SKU-A before the delay lands. "}},
         ):
             told = generate_scenario_narrative(shock, 3, 0, 1)
         self.assertEqual(told["source"], "gemma2:2b")
         self.assertIn("Order SKU-A", told["narrative"])
         self.assertEqual(told["fallback"], text)
+
+    def test_gemma_call_uses_a_short_timeout(self):
+        import main
+
+        with patch("main.ollama.Client") as client_cls:
+            client_cls.return_value.chat.return_value = {"message": {"content": "ok"}}
+            main._gemma_chat([{"role": "user", "content": "hi"}])
+        client_cls.assert_called_once_with(timeout=main.GEMMA_TIMEOUT_SECONDS)
+        self.assertLessEqual(main.GEMMA_TIMEOUT_SECONDS, 8)
 
 
 if __name__ == "__main__":

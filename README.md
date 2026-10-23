@@ -37,16 +37,27 @@ streamlit run ui_app.py
 
 Legacy paths still work: `python src/main.py` and `streamlit run src/ui_app.py`.
 
-## Deploy the frontend (public URL)
+## Deploy the frontend (Streamlit Community Cloud)
 
-1. Push this repo to GitHub (`mnavaya/supplychain-risk-intelligence`).
-2. Open [Streamlit Community Cloud](https://share.streamlit.io/) and sign in with GitHub.
-3. **New app** → pick this repo → **Main file path:** `ui_app.py` → Deploy.
-4. Your live URL will look like: `https://<app-name>.streamlit.app`
+The public demo is `streamlit run ui_app.py`. Nothing else has to be started. The bundled sample file is `data/weekly/week_2026-04-13_demo.csv` (50 SKUs). The app does not fit a model until you click **Run analysis**, so the first page is ready as soon as Cloud finishes installing dependencies. `requirements.txt` pins the versions this repo was tested with, and `runtime.txt` asks for Python 3.12. No secrets and no API keys.
 
-Notes for the cloud app:
-- Forecasts, risk board, and the rule-based **Copilot** work without Ollama.
-- The LLM written report needs a local Ollama instance, so turn **Generate LLM report** off in the sidebar on Streamlit Cloud (or leave it on — you’ll get a friendly error in the report tab).
+Exact steps:
+
+1. Merge this branch to `main` (or deploy the preview branch `cursor/inventory-insights-3fc4` before merge).
+2. Open [Streamlit Community Cloud](https://share.streamlit.io/) and sign in with the GitHub account that can see `mnavaya/supplychain-risk-intelligence`.
+3. **Create app**.
+4. Repository: `mnavaya/supplychain-risk-intelligence`.
+5. Branch: `main` after merge, or `cursor/inventory-insights-3fc4` for a preview.
+6. Main file path: `ui_app.py`.
+7. Advanced settings: Python **3.12**. Leave secrets empty.
+8. Deploy. The live URL is `https://<app-name>.streamlit.app`.
+
+On the live app:
+
+- Weekly CSV defaults to `week_2026-04-13_demo.csv`. Click **Run analysis**. Leave **Generate LLM report** off.
+- Risk board, service levels, forecast accuracy, ABC, supply shock (sliders, charts, Monte Carlo, emergency orders), and the rule-based Copilot all run in the browser. No local model is required.
+- **Write scenario narrative** and the written report call Gemma 2 only if Ollama is on the same machine. On Community Cloud they stop within a few seconds and keep the calculated summary. They do not block the rest of the app.
+- The file picker lists inventory CSVs only. Unrelated files that happen to sit in `data/weekly/` are skipped.
 
 ## What it does
 
@@ -96,4 +107,5 @@ The Supply shock tab is the planning sandbox. Three sliders set a supplier delay
 - A before/after bar chart and heatmap show how the High / Medium / Low mix shifts.
 - Emergency order quantity is the gap up to the shocked reorder point: safety stock uses the longer lead time, and the demand rate inside the reorder point is the average over that window (spiked weeks plus normal weeks).
 - Stockout probability is a 500-run Monte Carlo. Each week is a draw from a normal distribution centered on the shocked forecast, with the SKU's historical weekly standard deviation, and floored at zero. A run counts as a stockout when demand uses up on-hand stock before the delayed replenishment arrives.
-- **Write scenario narrative** asks local Gemma 2 (`gemma2:2b`) for two short paragraphs. If Ollama is not running, the tab keeps the calculated summary and says the model was unavailable.
+- **Write scenario narrative** asks local Gemma 2 (`gemma2:2b`) for two short paragraphs. If Ollama is not running, the call times out in a few seconds, the tab keeps the calculated summary, and it says the model was unavailable.
+- **Public demo.** `requirements.txt`, `runtime.txt` (`python-3.12`), and `.streamlit/config.toml` are set for Streamlit Community Cloud. The entry point is `ui_app.py`, the sample file ships in the repo, and a missing Gemma model does not block startup or the shock simulator. See **Deploy the frontend** above.

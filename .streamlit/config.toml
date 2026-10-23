@@ -1,0 +1,9 @@
+[global]
+showWarningOnDirectExecution = false
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+fileWatcherType = "none"
