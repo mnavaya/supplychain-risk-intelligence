@@ -100,7 +100,7 @@ python -m unittest discover -s tests -t .
 
 ### What-if supply shock simulator
 
-The Supply shock tab is the planning sandbox. Three sliders set a supplier delay (extra weeks), a demand spike (percent), and how many weeks the spike lasts. Either shock can be zero, or both can be on at once. Every SKU is resimulated with the same weeks-of-cover rules and the same reorder-point formula as the risk board.
+The Supply shock tab is the planning sandbox. The view remembers which tab is open, so moving a slider stays on this chart. Three sliders set a supplier delay (extra weeks), a demand spike (percent), and how many weeks the spike lasts. Either shock can be zero, or both can be on at once. Every SKU is resimulated with the same weeks-of-cover rules and the same reorder-point formula as the risk board.
 
 - SKUs that move into a worse risk band are listed first, with the risk before and after.
 - Projected stockout week is when on-hand stock hits zero on the shocked demand path. A spike only lifts demand for its own window, then demand returns to the forecast.

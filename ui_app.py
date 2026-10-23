@@ -563,6 +563,8 @@ c3.metric("High / critical risk", critical_count)
 c4.metric("Avg days to stockout", f"{avg_days:.1f}")
 
 
+# Track the selected tab. Without this, a slider rerun sends the view
+# back to the first tab, which hides the shock chart mid-demo.
 tabs = st.tabs(
     [
         "Risk board",
@@ -572,7 +574,9 @@ tabs = st.tabs(
         "Raw weeks",
         "Written report",
         "Copilot",
-    ]
+    ],
+    key="main_view",
+    on_change="rerun",
 )
 
 with tabs[0]:
