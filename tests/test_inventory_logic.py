@@ -1,6 +1,7 @@
 """Tests for holdout accuracy, service-level stock, cover alerts, and ABC."""
 
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from inventory_logic import (  # noqa: E402
+    MONTE_CARLO_RUNS,
     abc_summary,
     accuracy_display_table,
     apply_service_level,
@@ -21,17 +23,27 @@ from inventory_logic import (  # noqa: E402
     classify_cover_risk,
     compute_reorder_point,
     compute_safety_stock,
+    describe_shock,
+    effective_weekly_demand,
     eligible_forecast_skus,
+    emergency_order_quantity,
     forecast_accuracy_check,
     format_abc_summary,
     format_risk_board,
+    format_shock_table,
     holt_winters_forecast,
+    projected_stockout_week,
+    risk_count_frame,
+    risk_heatmap_frame,
+    risk_label_from_cover,
     sample_unit_cost,
+    simulate_supply_shock,
     sort_risk_table,
     split_train_test,
+    stockout_probabilities,
     weekly_series,
 )
-from main import forecast_and_stockout  # noqa: E402
+from main import forecast_and_stockout, generate_scenario_narrative  # noqa: E402
 from validation import backtest_forecast  # noqa: E402
 
 
@@ -393,6 +405,163 @@ class AbcTests(unittest.TestCase):
         self.assertIn("reorder point", at_99.iloc[0]["risk_reason"])
         self.assertGreater(at_99.iloc[0]["reorder_point"], 60)
         self.assertLess(at_90.iloc[0]["reorder_point"], 60)
+
+
+def _shock_row(**overrides):
+    row = {
+        "sku": "SKU-A",
+        "current_inventory": 30.0,
+        "forecast_weekly_demand": 10.0,
+        "avg_weekly_demand": 10.0,
+        "weekly_demand_sd": 0.0,
+        "lead_time_weeks": 1.0,
+        "z_score": 1.65,
+        "abc_class": "A",
+    }
+    row.update(overrides)
+    return row
+
+
+class SupplyShockTests(unittest.TestCase):
+    def test_zero_shock_matches_the_risk_board(self):
+        frame = pd.DataFrame(
+            [
+                _shock_row(sku="LOW", current_inventory=40, forecast_weekly_demand=10, lead_time_weeks=2),
+                _shock_row(sku="MED", current_inventory=25, forecast_weekly_demand=10, lead_time_weeks=2),
+                _shock_row(sku="HIGH", current_inventory=10, forecast_weekly_demand=10, lead_time_weeks=2),
+                _shock_row(sku="ZERO", current_inventory=8, forecast_weekly_demand=0, avg_weekly_demand=0, lead_time_weeks=2),
+            ]
+        )
+        shock = simulate_supply_shock(frame, extra_lead_weeks=0, spike_pct=0, spike_weeks=4, n_runs=50)
+        by_sku = shock.set_index("sku")
+        for sku, row in frame.set_index("sku").iterrows():
+            baseline = classify_cover_risk(
+                row["current_inventory"], row["forecast_weekly_demand"], row["lead_time_weeks"]
+            )
+            self.assertEqual(by_sku.loc[sku, "stockout_risk_before"], baseline["stockout_risk"])
+            self.assertEqual(by_sku.loc[sku, "stockout_risk_after"], baseline["stockout_risk"])
+            self.assertFalse(bool(by_sku.loc[sku, "risk_flipped"]))
+        self.assertEqual(by_sku.loc["ZERO", "stockout_risk_after"], "Low")
+        self.assertTrue(np.isinf(by_sku.loc["ZERO", "projected_stockout_week"]))
+        self.assertEqual(by_sku.loc["ZERO", "stockout_probability"], 0.0)
+        self.assertIn("No stockout", format_shock_table(shock.loc[shock["sku"] == "ZERO"]).iloc[0]["Projected stockout week"])
+
+    def test_delay_and_spike_can_flip_risk_and_both_is_at_least_as_severe(self):
+        # Cover is 3 weeks against a 1-week lead: Low.
+        base = pd.DataFrame([_shock_row()])
+        self.assertEqual(risk_label_from_cover(3, 1), "Low")
+
+        delayed = simulate_supply_shock(base, extra_lead_weeks=3, spike_pct=0, spike_weeks=4)
+        spiked = simulate_supply_shock(base, extra_lead_weeks=0, spike_pct=100, spike_weeks=8)
+        both = simulate_supply_shock(base, extra_lead_weeks=3, spike_pct=100, spike_weeks=8)
+
+        self.assertEqual(delayed.iloc[0]["stockout_risk_after"], "High")
+        self.assertEqual(spiked.iloc[0]["stockout_risk_after"], "Medium")
+        self.assertEqual(both.iloc[0]["stockout_risk_after"], "High")
+        self.assertTrue(bool(delayed.iloc[0]["risk_flipped"]))
+        self.assertTrue(bool(spiked.iloc[0]["risk_flipped"]))
+        self.assertTrue(bool(both.iloc[0]["risk_flipped"]))
+        self.assertAlmostEqual(spiked.iloc[0]["projected_stockout_week"], 1.5)
+        self.assertLess(both.iloc[0]["projected_stockout_week"], delayed.iloc[0]["projected_stockout_week"])
+        self.assertGreaterEqual(both.iloc[0]["emergency_order_qty"], delayed.iloc[0]["emergency_order_qty"])
+        self.assertGreaterEqual(both.iloc[0]["emergency_order_qty"], spiked.iloc[0]["emergency_order_qty"])
+
+    def test_emergency_order_uses_the_reorder_point_formula(self):
+        # 100% spike for the whole 4-week lead. Effective demand is 20.
+        # SS = 1.65 * 4 * sqrt(4) = 13.2. ROP = 20 * 4 + 13.2 = 93.2. Order = 93.2 - 30.
+        quote = emergency_order_quantity(30, 10, 4, 4, 1.65, spike_pct=100, spike_weeks=4)
+        self.assertAlmostEqual(effective_weekly_demand(10, 100, 4, 4), 20.0)
+        self.assertAlmostEqual(quote["safety_stock"], compute_safety_stock(4, 4, 1.65))
+        self.assertAlmostEqual(
+            quote["reorder_point"],
+            compute_reorder_point(20, 4, quote["safety_stock"]),
+        )
+        self.assertAlmostEqual(quote["emergency_order_qty"], 93.2 - 30)
+
+        no_gap = emergency_order_quantity(100, 10, 0, 1, 1.65, spike_pct=0, spike_weeks=0)
+        self.assertEqual(no_gap["emergency_order_qty"], 0.0)
+
+    def test_monte_carlo_probability_bounds_and_speed(self):
+        certain = stockout_probabilities([10], [10], [0], [2], n_runs=MONTE_CARLO_RUNS, seed=1)
+        safe = stockout_probabilities([100], [10], [0], [2], n_runs=MONTE_CARLO_RUNS, seed=1)
+        partial = stockout_probabilities([4], [10], [0], [0.5], n_runs=20, seed=1)
+        exact = stockout_probabilities([10], [10], [0], [1], n_runs=20, seed=1)
+        noisy = stockout_probabilities([20], [10], [4], [2], n_runs=MONTE_CARLO_RUNS, seed=7)
+        self.assertEqual(certain[0], 1.0)
+        self.assertEqual(safe[0], 0.0)
+        self.assertEqual(partial[0], 1.0)
+        self.assertEqual(exact[0], 0.0)
+        self.assertGreater(noisy[0], 0.0)
+        self.assertLess(noisy[0], 1.0)
+
+        longer = stockout_probabilities([25.0], [10.0], [0.0], [3.0], n_runs=20, seed=1)
+        shorter = stockout_probabilities([25.0], [10.0], [0.0], [2.0], n_runs=20, seed=1)
+        self.assertGreater(float(longer[0]), float(shorter[0]))
+
+        catalog = pd.DataFrame(
+            [
+                _shock_row(
+                    sku=f"SKU-{i:02d}",
+                    current_inventory=20 + i,
+                    forecast_weekly_demand=8 + (i % 5),
+                    avg_weekly_demand=8 + (i % 5),
+                    weekly_demand_sd=2 + (i % 3),
+                    lead_time_weeks=0.5 + (i % 4),
+                )
+                for i in range(50)
+            ]
+        )
+        started = time.perf_counter()
+        shock = simulate_supply_shock(
+            catalog, extra_lead_weeks=2, spike_pct=40, spike_weeks=3, n_runs=MONTE_CARLO_RUNS
+        )
+        elapsed = time.perf_counter() - started
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(len(shock), 50)
+        self.assertTrue(((shock["stockout_probability"] >= 0) & (shock["stockout_probability"] <= 1)).all())
+        counts = risk_count_frame(shock)
+        self.assertEqual(int(counts["skus"].sum()), 100)  # before + after
+        heat = risk_heatmap_frame(shock)
+        self.assertEqual(len(heat), 100)
+        self.assertEqual(set(heat["when"]), {"Before", "After"})
+        # Flips are sorted ahead of SKUs that stay put.
+        if shock["risk_flipped"].any() and (~shock["risk_flipped"]).any():
+            self.assertTrue(bool(shock.iloc[0]["risk_flipped"]))
+            self.assertFalse(bool(shock.iloc[-1]["risk_flipped"]))
+
+    def test_projected_week_respects_a_short_spike(self):
+        # Double demand is 20. Stock of 50 runs out 2.5 weeks into a long spike.
+        self.assertAlmostEqual(projected_stockout_week(50, 10, spike_pct=100, spike_weeks=4), 2.5)
+        # A 2-week spike consumes 40, then the last 10 units take one normal week.
+        self.assertAlmostEqual(projected_stockout_week(50, 10, spike_pct=100, spike_weeks=2), 3.0)
+        self.assertAlmostEqual(projected_stockout_week(100, 10, spike_pct=100, spike_weeks=2), 8.0)
+
+    def test_narrative_falls_back_when_gemma_is_down(self):
+        shock = simulate_supply_shock(
+            pd.DataFrame([_shock_row()]),
+            extra_lead_weeks=3,
+            spike_pct=0,
+            spike_weeks=1,
+            n_runs=10,
+        )
+        text = describe_shock(shock, 3, 0, 1)
+        self.assertIn("higher stockout risk", text)
+        self.assertIn("SKU-A", text)
+
+        with patch("main.ollama.chat", side_effect=ConnectionError("connection refused")):
+            told = generate_scenario_narrative(shock, 3, 0, 1)
+        self.assertEqual(told["source"], "rule")
+        self.assertEqual(told["narrative"], text)
+        self.assertIn("connection refused", told["error"])
+
+        with patch(
+            "main.ollama.chat",
+            return_value={"message": {"content": " Order SKU-A before the delay lands. "}},
+        ):
+            told = generate_scenario_narrative(shock, 3, 0, 1)
+        self.assertEqual(told["source"], "gemma2:2b")
+        self.assertIn("Order SKU-A", told["narrative"])
+        self.assertEqual(told["fallback"], text)
 
 
 if __name__ == "__main__":

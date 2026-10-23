@@ -1,20 +1,28 @@
+import altair as alt
 import streamlit as st
 import pandas as pd
 
 from inventory_logic import (
     DEFAULT_SERVICE_LEVEL,
+    MONTE_CARLO_RUNS,
     SERVICE_LEVELS,
+    SHOCK_COLUMNS,
     accuracy_display_table,
     apply_service_level,
+    describe_shock,
     eligible_forecast_skus,
     forecast_accuracy_check,
     format_abc_summary,
     format_risk_board,
     format_service_snapshot,
+    format_shock_table,
+    risk_count_frame,
+    risk_heatmap_frame,
     service_level_message,
     service_level_snapshot,
+    simulate_supply_shock,
 )
-from main import DATA_DIR, OUTPUT_DIR, SupplyChainAgent, run_pipeline
+from main import DATA_DIR, OUTPUT_DIR, SupplyChainAgent, generate_scenario_narrative, run_pipeline
 
 
 st.set_page_config(
@@ -329,6 +337,71 @@ def _default_file_index(options):
     return 0 if options else None
 
 
+def _dark_chart(chart: alt.Chart) -> alt.Chart:
+    return (
+        chart.configure(background="#1a1f28")
+        .configure_view(strokeWidth=0)
+        .configure_axis(
+            labelColor="#f5f6f7",
+            titleColor="#f5f6f7",
+            gridColor="#3a4250",
+            domainColor="#5a6475",
+        )
+        .configure_legend(labelColor="#f5f6f7", titleColor="#f5f6f7")
+        .configure_title(color="#ffffff")
+    )
+
+
+def _shock_bar_chart(shock: pd.DataFrame) -> alt.Chart:
+    counts = risk_count_frame(shock)
+    chart = (
+        alt.Chart(counts)
+        .mark_bar()
+        .encode(
+            x=alt.X("risk:N", sort=["High", "Medium", "Low"], title="Stockout risk"),
+            y=alt.Y("skus:Q", title="SKUs"),
+            color=alt.Color(
+                "when:N",
+                sort=["Before", "After"],
+                title=None,
+                scale=alt.Scale(domain=["Before", "After"], range=["#8aa0b8", "#f4f1ea"]),
+            ),
+            xOffset="when:N",
+            tooltip=["when:N", "risk:N", "skus:Q"],
+        )
+        .properties(height=260, title="Risk before and after the shock")
+    )
+    return _dark_chart(chart)
+
+
+def _shock_heatmap(shock: pd.DataFrame) -> alt.Chart:
+    heat = risk_heatmap_frame(shock)
+    chart = (
+        alt.Chart(heat)
+        .mark_rect()
+        .encode(
+            x=alt.X("when:N", sort=["Before", "After"], title=None),
+            y=alt.Y("sku:N", sort=shock["sku"].tolist(), title="SKU"),
+            color=alt.Color(
+                "risk:N",
+                title="Risk",
+                scale=alt.Scale(
+                    domain=["High", "Medium", "Low"],
+                    range=["#d45d4e", "#e0b15a", "#3f9d6a"],
+                ),
+            ),
+            tooltip=[
+                "sku:N",
+                "when:N",
+                "risk:N",
+                alt.Tooltip("stockout_probability:Q", format=".0%", title="Stockout probability"),
+            ],
+        )
+        .properties(height=max(220, 18 * max(len(shock), 1)), title="Before / after risk")
+    )
+    return _dark_chart(chart)
+
+
 def _accuracy_for(raw_df: pd.DataFrame, sku: str, source_file: str):
     """Fit the holdout once per file and SKU, not on every sidebar tweak."""
     key = (source_file, sku, id(raw_df))
@@ -400,7 +473,7 @@ st.markdown(
 <div class="hero">
   <p class="brand-kicker">Supply chain intelligence</p>
   <p class="brand-title">Clear inventory risk, when you need it.</p>
-  <p class="brand-sub">Forecast demand, check it against a holdout, set service-level safety stock, and ask the copilot — all from your weekly CSV.</p>
+  <p class="brand-sub">Forecast demand, stress a supply shock, set service-level safety stock, and ask the copilot — all from your weekly CSV.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -472,7 +545,15 @@ c4.metric("Avg days to stockout", f"{avg_days:.1f}")
 
 
 tabs = st.tabs(
-    ["Risk board", "Forecast accuracy", "ABC summary", "Raw weeks", "Written report", "Copilot"]
+    [
+        "Risk board",
+        "Supply shock",
+        "Forecast accuracy",
+        "ABC summary",
+        "Raw weeks",
+        "Written report",
+        "Copilot",
+    ]
 )
 
 with tabs[0]:
@@ -499,6 +580,77 @@ with tabs[0]:
     st.dataframe(format_risk_board(summary_df), use_container_width=True, hide_index=True)
 
 with tabs[1]:
+    st.markdown("##### What-if supply shock")
+    st.caption(
+        "Add supplier delay, a demand spike, or both. Risk uses the same weeks-of-cover rules as the board. "
+        f"Stockout probability is a {MONTE_CARLO_RUNS}-run Monte Carlo: each week is drawn around the shocked "
+        "forecast using that SKU's historical demand SD. Emergency orders fill the gap up to the shocked reorder point."
+    )
+    shock_ready = set(SHOCK_COLUMNS).issubset(summary_df.columns) and "z_score" in summary_df.columns
+    if not shock_ready:
+        st.caption("Re-run the analysis to simulate a shock. This summary is missing demand or lead-time inputs.")
+    else:
+        shock_controls = st.columns(3)
+        extra_weeks = shock_controls[0].slider("Supplier delay (extra weeks)", 0, 8, 2)
+        spike_pct = shock_controls[1].slider("Demand spike (%)", 0, 200, 50, step=5)
+        spike_weeks = shock_controls[2].slider("Spike length (weeks)", 1, 12, 4)
+        if spike_pct == 0:
+            st.caption("Demand spike is 0%, so spike length does not change the scenario.")
+
+        shock = simulate_supply_shock(
+            summary_df,
+            extra_lead_weeks=extra_weeks,
+            spike_pct=spike_pct,
+            spike_weeks=spike_weeks,
+            n_runs=MONTE_CARLO_RUNS,
+        )
+        flipped = int(shock["risk_flipped"].sum())
+        high_after = int((shock["stockout_risk_after"] == "High").sum())
+        likely = int((shock["stockout_probability"] >= 0.5).sum())
+        total_order = float(shock["emergency_order_qty"].sum())
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("SKUs flipped higher", flipped)
+        m2.metric("High risk after", high_after)
+        m3.metric("Stockout probability ≥ 50%", likely)
+        m4.metric("Emergency units", f"{total_order:,.0f}")
+
+        st.markdown(describe_shock(shock, extra_weeks, spike_pct, spike_weeks))
+        chart_left, chart_right = st.columns([1, 1])
+        chart_left.altair_chart(_shock_bar_chart(shock), use_container_width=True)
+        chart_right.altair_chart(_shock_heatmap(shock), use_container_width=True)
+
+        st.markdown("##### SKUs that flip to a higher risk")
+        flips = format_shock_table(shock, flips_only=True)
+        if flips.empty:
+            st.caption("No SKU moves into a worse risk band under this scenario.")
+        else:
+            st.dataframe(flips, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Every SKU under the scenario")
+        st.caption("Sorted with risk increases first, then the highest stockout probability.")
+        st.dataframe(format_shock_table(shock), use_container_width=True, hide_index=True)
+
+        narrative_key = (extra_weeks, spike_pct, spike_weeks, id(summary_df))
+        if st.button("Write scenario narrative", key="shock_narrative_button"):
+            with st.spinner("Asking Gemma 2…"):
+                told = generate_scenario_narrative(shock, extra_weeks, spike_pct, spike_weeks)
+            st.session_state["shock_narrative"] = told
+            st.session_state["shock_narrative_key"] = narrative_key
+
+        saved = st.session_state.get("shock_narrative")
+        if saved and st.session_state.get("shock_narrative_key") == narrative_key:
+            if saved.get("source") == "gemma2:2b":
+                st.markdown("##### Gemma 2")
+                st.markdown(saved.get("narrative") or "")
+            else:
+                st.caption(
+                    "Gemma 2 is not available, so the summary above is the scenario narrative. "
+                    f"({saved.get('error') or 'model unavailable'})"
+                )
+        elif saved:
+            st.caption("Sliders changed. Write the narrative again to refresh the Gemma 2 note.")
+
+with tabs[2]:
     st.markdown("##### Forecast accuracy check")
     st.caption(
         "For a frequently sold SKU, the last 4 weeks are held out. "
@@ -541,7 +693,7 @@ with tabs[1]:
                 else:
                     st.info(check["message"])
 
-with tabs[2]:
+with tabs[3]:
     st.markdown("##### ABC classification")
     st.caption(
         "Usage value = annual demand × unit cost. SKUs are sorted from highest usage value "
@@ -568,13 +720,13 @@ with tabs[2]:
             f"Usage value shares sum to {usage_pct:.1f}%. SKU shares sum to {sku_pct:.1f}%."
         )
 
-with tabs[3]:
+with tabs[4]:
     if raw_df is not None:
         st.dataframe(raw_df, use_container_width=True, hide_index=True)
     else:
         st.caption("Raw weekly rows appear after you run a fresh analysis in this session.")
 
-with tabs[4]:
+with tabs[5]:
     if report.strip():
         st.markdown(report)
         st.download_button(
@@ -586,7 +738,7 @@ with tabs[4]:
     else:
         st.warning("No report text yet. Enable LLM report in the sidebar and re-run.")
 
-with tabs[5]:
+with tabs[6]:
     st.markdown("##### Ask the inventory copilot")
     st.caption(
         "Try: *Which items are below reorder point?* · *Show high risk items* · *Status for SKU …*"

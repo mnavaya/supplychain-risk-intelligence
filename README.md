@@ -86,3 +86,14 @@ python -m unittest discover -s tests -t .
 - **Service-level safety stock.** The sidebar offers 90% (Z=1.28), 95% (Z=1.65), and 99% (Z=2.33). Safety stock = Z × weekly demand standard deviation × √(lead time in weeks). Reorder point = average weekly demand × lead time in weeks + safety stock. The risk board shows the selected level next to safety stock and reorder point, and a three-row table shows all three levels together. A higher service level raises both values when demand varies.
 - **Explainable stockout alerts.** Weeks of cover = on-hand stock ÷ forecast weekly demand, compared with supplier lead time in weeks. High means stock runs out before replenishment arrives, Medium means cover is within one week of the lead time, and Low means cover is comfortable. The risk table adds Weeks of Cover and Risk Reason, sorts high risk first, and treats zero forecast demand as no drawdown instead of dividing by zero.
 - **ABC summary.** Usage value = annual demand × unit cost. SKUs are sorted descending, A is the first 80% of usage value, B the next 15%, and C the rest. The ABC tab summarizes each class with SKU count, percent of SKUs, total usage value, and percent of usage value. Those percent columns sum to about 100%.
+
+### What-if supply shock simulator
+
+The Supply shock tab is the planning sandbox. Three sliders set a supplier delay (extra weeks), a demand spike (percent), and how many weeks the spike lasts. Either shock can be zero, or both can be on at once. Every SKU is resimulated with the same weeks-of-cover rules and the same reorder-point formula as the risk board.
+
+- SKUs that move into a worse risk band are listed first, with the risk before and after.
+- Projected stockout week is when on-hand stock hits zero on the shocked demand path. A spike only lifts demand for its own window, then demand returns to the forecast.
+- A before/after bar chart and heatmap show how the High / Medium / Low mix shifts.
+- Emergency order quantity is the gap up to the shocked reorder point: safety stock uses the longer lead time, and the demand rate inside the reorder point is the average over that window (spiked weeks plus normal weeks).
+- Stockout probability is a 500-run Monte Carlo. Each week is a draw from a normal distribution centered on the shocked forecast, with the SKU's historical weekly standard deviation, and floored at zero. A run counts as a stockout when demand uses up on-hand stock before the delayed replenishment arrives.
+- **Write scenario narrative** asks local Gemma 2 (`gemma2:2b`) for two short paragraphs. If Ollama is not running, the tab keeps the calculated summary and says the model was unavailable.

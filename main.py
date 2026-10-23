@@ -14,6 +14,7 @@ from inventory_logic import (
     attach_unit_cost,
     classify_abc,
     classify_cover_risk,
+    describe_shock,
     forecast_mean_demand,
     format_weeks_of_cover,
     sort_risk_table,
@@ -203,6 +204,63 @@ Write a clean Markdown report with these precise operational sections:
 
     print(f"✅ Report compiled in {time.time() - start:.1f} seconds → {report_path}")
     return report
+
+
+def generate_scenario_narrative(
+    shock_df: pd.DataFrame,
+    extra_lead_weeks: float,
+    spike_pct: float,
+    spike_weeks: float,
+) -> dict:
+    """Ask Gemma 2 for a short shock narrative. Fall back to the calculated summary.
+
+    Returns source "gemma2:2b" or "rule". The rule-based text is always in
+    `fallback` so the UI can show the numbers even when the model answers.
+    """
+    fallback = describe_shock(shock_df, extra_lead_weeks, spike_pct, spike_weeks)
+    focus = shock_df.head(12)
+    columns = [
+        column
+        for column in (
+            "sku",
+            "stockout_risk_before",
+            "stockout_risk_after",
+            "projected_stockout_week",
+            "stockout_probability",
+            "emergency_order_qty",
+        )
+        if column in focus.columns
+    ]
+    table = focus[columns].to_string(index=False) if len(focus) else "(no SKUs)"
+    prompt = f"""You are a senior inventory planner. Write two short paragraphs about this supply shock.
+Use ONLY the numbers below. Do not invent SKUs or quantities.
+Name which SKUs get worse, the stockout probability, and the emergency order quantity.
+
+Scenario: {extra_lead_weeks:.0f} extra weeks of supplier delay, {spike_pct:.0f}% demand spike for {spike_weeks:.0f} weeks.
+
+Calculated summary:
+{fallback}
+
+Worst SKUs:
+{table}
+"""
+    try:
+        response = ollama.chat(
+            model="gemma2:2b",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        narrative = (response.get("message") or {}).get("content") or ""
+        narrative = narrative.strip()
+        if not narrative:
+            raise RuntimeError("Gemma 2 returned an empty narrative")
+        return {"source": "gemma2:2b", "narrative": narrative, "fallback": fallback, "error": ""}
+    except Exception as exc:
+        return {
+            "source": "rule",
+            "narrative": fallback,
+            "fallback": fallback,
+            "error": str(exc),
+        }
 
 
 # ====================== COGNITIVE INTERACTIVE AGENT ======================

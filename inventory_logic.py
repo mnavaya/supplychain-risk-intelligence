@@ -316,15 +316,33 @@ def weeks_of_cover(current_stock, forecast_weekly_demand) -> float:
     return stock / demand
 
 
-def classify_cover_risk(current_stock, forecast_weekly_demand, lead_time_weeks) -> dict:
-    """Compare weeks of cover with supplier lead time.
+def _clean_weeks(value) -> float:
+    if value is None or pd.isna(value):
+        return 0.0
+    return max(float(value), 0.0)
 
-    High: cover runs out before replenishment arrives (cover < lead time).
-    Medium: cover is within one week of the lead time (lead time <= cover < lead time + 1).
-    Low: cover comfortably exceeds the lead time by at least a week.
+
+def risk_label_from_cover(cover_weeks, lead_time_weeks) -> str:
+    """Same High / Medium / Low cutoffs as the risk board.
+
+    High: cover runs out before replenishment (cover < lead time).
+    Medium: within one week of the lead time.
+    Low: at least a week of slack, or no drawdown.
     """
+    lead = _clean_weeks(lead_time_weeks)
+    if not math.isfinite(cover_weeks):
+        return "Low"
+    if cover_weeks < lead:
+        return "High"
+    if cover_weeks < lead + 1:
+        return "Medium"
+    return "Low"
+
+
+def classify_cover_risk(current_stock, forecast_weekly_demand, lead_time_weeks) -> dict:
+    """Compare weeks of cover with supplier lead time."""
     cover = weeks_of_cover(current_stock, forecast_weekly_demand)
-    lead = 0.0 if pd.isna(lead_time_weeks) else max(float(lead_time_weeks), 0.0)
+    lead = _clean_weeks(lead_time_weeks)
     if not math.isfinite(cover):
         return {
             "weeks_of_cover": math.inf,
@@ -333,20 +351,18 @@ def classify_cover_risk(current_stock, forecast_weekly_demand, lead_time_weeks) 
                 "Forecast weekly demand is zero, so on-hand stock is not being drawn down."
             ),
         }
-    if cover < lead:
-        risk = "High"
+    risk = risk_label_from_cover(cover, lead)
+    if risk == "High":
         reason = (
             f"Runs out before replenishment arrives "
             f"({cover:.1f} weeks of cover vs {lead:.1f} weeks lead time)."
         )
-    elif cover < lead + 1:
-        risk = "Medium"
+    elif risk == "Medium":
         reason = (
             f"Within one week of the supplier lead time "
             f"({cover:.1f} weeks of cover vs {lead:.1f} weeks lead time)."
         )
     else:
-        risk = "Low"
         reason = (
             f"Comfortably covers the supplier lead time "
             f"({cover:.1f} weeks of cover vs {lead:.1f} weeks lead time)."
@@ -696,3 +712,361 @@ def accuracy_display_table(result: dict) -> pd.DataFrame:
     for column in ("Actual", "Holt-Winters", "Naive baseline"):
         table[column] = pd.to_numeric(table[column], errors="coerce")
     return table
+
+
+# ====================== SUPPLY SHOCK SIMULATOR ======================
+MONTE_CARLO_RUNS = 500
+SHOCK_COLUMNS = (
+    "sku",
+    "current_inventory",
+    "forecast_weekly_demand",
+    "avg_weekly_demand",
+    "weekly_demand_sd",
+    "lead_time_weeks",
+)
+
+
+def projected_stockout_week(stock, weekly_demand, spike_pct=0.0, spike_weeks=0.0) -> float:
+    """Fractional week when on-hand hits zero under a temporary demand spike.
+
+    The spike multiplies weekly demand for the first `spike_weeks` only.
+    Zero demand never divides; the result is infinity (no stockout).
+    """
+    on_hand = 0.0 if pd.isna(stock) else max(float(stock), 0.0)
+    base = 0.0 if pd.isna(weekly_demand) else max(float(weekly_demand), 0.0)
+    pct = 0.0 if pd.isna(spike_pct) else max(float(spike_pct), 0.0)
+    window = 0.0 if pd.isna(spike_weeks) else max(float(spike_weeks), 0.0)
+    spiked = base * (1.0 + pct / 100.0) if window > 0 and pct > 0 else base
+
+    if on_hand <= 0:
+        return 0.0 if (base > 0 or spiked > 0) else math.inf
+
+    elapsed = 0.0
+    remaining = on_hand
+    if window > 0 and pct > 0:
+        if spiked <= 0:
+            elapsed = window
+        else:
+            during_spike = remaining / spiked
+            if during_spike <= window:
+                return during_spike
+            remaining -= spiked * window
+            elapsed = window
+    if base <= 0:
+        return math.inf
+    return elapsed + remaining / base
+
+
+def effective_weekly_demand(avg_weekly, spike_pct, spike_weeks, lead_weeks) -> float:
+    """Average weekly demand across the replenishment window.
+
+    The spike applies only to the overlapping weeks, then demand returns to normal.
+    That average is what the reorder point multiplies by lead time.
+    """
+    average = 0.0 if pd.isna(avg_weekly) else max(float(avg_weekly), 0.0)
+    lead = _clean_weeks(lead_weeks)
+    pct = 0.0 if pd.isna(spike_pct) else max(float(spike_pct), 0.0)
+    window = 0.0 if pd.isna(spike_weeks) else max(float(spike_weeks), 0.0)
+    spiked = average * (1.0 + pct / 100.0)
+    if lead <= 0:
+        return spiked if pct > 0 and window > 0 else average
+    overlap = min(window, lead) if pct > 0 else 0.0
+    normal = lead - overlap
+    return (overlap * spiked + normal * average) / lead
+
+
+def emergency_order_quantity(
+    stock,
+    avg_weekly,
+    weekly_sd,
+    lead_weeks,
+    z,
+    spike_pct=0.0,
+    spike_weeks=0.0,
+) -> dict:
+    """Units to reach the shocked reorder point. Uses the existing ROP formula."""
+    on_hand = 0.0 if pd.isna(stock) else max(float(stock), 0.0)
+    lead = _clean_weeks(lead_weeks)
+    effective = effective_weekly_demand(avg_weekly, spike_pct, spike_weeks, lead)
+    safety = compute_safety_stock(weekly_sd, lead, z)
+    reorder = compute_reorder_point(effective, lead, safety)
+    return {
+        "effective_weekly_demand": effective,
+        "safety_stock": safety,
+        "reorder_point": reorder,
+        "emergency_order_qty": max(0.0, reorder - on_hand),
+    }
+
+
+def stockout_probabilities(
+    stock,
+    weekly_demand,
+    weekly_sd,
+    lead_weeks,
+    spike_pct=0.0,
+    spike_weeks=0.0,
+    n_runs: int = MONTE_CARLO_RUNS,
+    seed: int = 42,
+) -> np.ndarray:
+    """Share of runs that consume on-hand stock before replenishment arrives.
+
+    Each run draws a weekly demand from Normal(shocked forecast, historical SD),
+    clipped at zero. Weeks inside the spike use the spiked mean. A fractional
+    last week counts only that fraction of its draw.
+    """
+    on_hand = np.asarray(stock, dtype=float)
+    if on_hand.ndim == 0:
+        on_hand = on_hand.reshape(1)
+    n = len(on_hand)
+    on_hand = np.nan_to_num(on_hand, nan=0.0)
+    base = np.maximum(np.nan_to_num(np.asarray(weekly_demand, dtype=float), nan=0.0), 0.0)
+    sd = np.maximum(np.nan_to_num(np.asarray(weekly_sd, dtype=float), nan=0.0), 0.0)
+    leads = np.maximum(np.nan_to_num(np.asarray(lead_weeks, dtype=float), nan=0.0), 0.0)
+    if len(base) != n or len(sd) != n or len(leads) != n:
+        raise ValueError("stock, demand, sd, and lead time must have the same length")
+    runs = int(n_runs)
+    if runs < 1:
+        raise ValueError("n_runs must be at least 1")
+
+    if n == 0 or float(leads.max()) <= 0:
+        # Nothing to wait for. Only a SKU that is already at zero counts as stocked out.
+        return (on_hand <= 0).astype(float)
+
+    horizon = int(math.ceil(float(leads.max())))
+    week = np.arange(horizon)
+    pct = 0.0 if pd.isna(spike_pct) else max(float(spike_pct), 0.0)
+    window = 0.0 if pd.isna(spike_weeks) else max(float(spike_weeks), 0.0)
+    spiked = base * (1.0 + pct / 100.0) if pct > 0 and window > 0 else base
+    if pct > 0 and window > 0:
+        means = np.where(week[None, :] < window, spiked[:, None], base[:, None])
+    else:
+        means = np.repeat(base[:, None], horizon, axis=1)
+
+    floors = np.floor(leads)
+    fracs = leads - floors
+    weights = (week[None, :] < floors[:, None]).astype(float)
+    partial_idx = floors.astype(int)
+    valid = (fracs > 1e-12) & (partial_idx < horizon)
+    if np.any(valid):
+        weights[np.flatnonzero(valid), partial_idx[valid]] = fracs[valid]
+
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, 1.0, size=(n, runs, horizon))
+    draws = np.clip(means[:, None, :] + sd[:, None, None] * noise, 0.0, None)
+    totals = (draws * weights[:, None, :]).sum(axis=2)
+    # Strictly before arrival. Landing on zero as the order arrives is not counted.
+    return (totals > on_hand[:, None]).mean(axis=1)
+
+
+def _series(frame: pd.DataFrame, column: str, default: float = 0.0) -> np.ndarray:
+    if column not in frame.columns:
+        return np.full(len(frame), default, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
+
+
+def simulate_supply_shock(
+    summary: pd.DataFrame,
+    extra_lead_weeks: float = 0.0,
+    spike_pct: float = 0.0,
+    spike_weeks: float = 0.0,
+    n_runs: int = MONTE_CARLO_RUNS,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Apply a supplier delay and/or a demand spike to every SKU.
+
+    Risk uses the same cover-versus-lead-time rules as the risk board.
+    Emergency quantity is the gap up to the reorder point after the shock.
+    """
+    required = set(SHOCK_COLUMNS)
+    missing = required.difference(summary.columns)
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(f"Supply shock needs columns: {missing_list}")
+
+    frame = summary.reset_index(drop=True)
+    delay = _clean_weeks(extra_lead_weeks)
+    pct = 0.0 if pd.isna(spike_pct) else max(float(spike_pct), 0.0)
+    window = _clean_weeks(spike_weeks)
+    if "z_score" in frame.columns:
+        z_values = _series(frame, "z_score", SERVICE_LEVELS[DEFAULT_SERVICE_LEVEL])
+    else:
+        z_values = np.full(len(frame), SERVICE_LEVELS[DEFAULT_SERVICE_LEVEL])
+    z_values = np.where(
+        np.isfinite(z_values),
+        z_values,
+        SERVICE_LEVELS[DEFAULT_SERVICE_LEVEL],
+    )
+
+    stock = np.maximum(np.nan_to_num(_series(frame, "current_inventory"), nan=0.0), 0.0)
+    forecast = np.maximum(np.nan_to_num(_series(frame, "forecast_weekly_demand"), nan=0.0), 0.0)
+    average = np.maximum(np.nan_to_num(_series(frame, "avg_weekly_demand"), nan=0.0), 0.0)
+    sd = np.maximum(np.nan_to_num(_series(frame, "weekly_demand_sd"), nan=0.0), 0.0)
+    lead = np.maximum(np.nan_to_num(_series(frame, "lead_time_weeks"), nan=0.0), 0.0)
+    lead_after = lead + delay
+
+    cover_before = np.array(
+        [weeks_of_cover(units, demand) for units, demand in zip(stock, forecast)],
+        dtype=float,
+    )
+    cover_after = np.array(
+        [
+            projected_stockout_week(units, demand, pct, window)
+            for units, demand in zip(stock, forecast)
+        ],
+        dtype=float,
+    )
+    risk_before = [risk_label_from_cover(cover, weeks) for cover, weeks in zip(cover_before, lead)]
+    risk_after = [risk_label_from_cover(cover, weeks) for cover, weeks in zip(cover_after, lead_after)]
+    rank_before = np.array([RISK_SORT_ORDER.get(label, 9) for label in risk_before])
+    rank_after = np.array([RISK_SORT_ORDER.get(label, 9) for label in risk_after])
+
+    orders = [
+        emergency_order_quantity(units, avg, spread, weeks, z, pct, window)
+        for units, avg, spread, weeks, z in zip(stock, average, sd, lead_after, z_values)
+    ]
+    probabilities = stockout_probabilities(
+        stock, forecast, sd, lead_after, pct, window, n_runs=n_runs, seed=seed
+    )
+
+    out = pd.DataFrame(
+        {
+            "sku": frame["sku"].astype(str),
+            "stockout_risk_before": risk_before,
+            "stockout_risk_after": risk_after,
+            "risk_flipped": rank_after < rank_before,
+            "weeks_of_cover_before": cover_before,
+            "projected_stockout_week": cover_after,
+            "stockout_probability": probabilities,
+            "emergency_order_qty": [row["emergency_order_qty"] for row in orders],
+            "reorder_point_after": [row["reorder_point"] for row in orders],
+            "safety_stock_after": [row["safety_stock"] for row in orders],
+            "effective_weekly_demand": [row["effective_weekly_demand"] for row in orders],
+            "lead_time_weeks_before": lead,
+            "lead_time_weeks_after": lead_after,
+        }
+    )
+    if "abc_class" in frame.columns:
+        out["abc_class"] = frame["abc_class"].to_numpy()
+    out = out.sort_values(
+        ["risk_flipped", "stockout_probability", "projected_stockout_week", "sku"],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+    return out
+
+
+def risk_count_frame(shock: pd.DataFrame) -> pd.DataFrame:
+    """SKU counts by risk label, before and after the shock."""
+    rows = []
+    for label in ("High", "Medium", "Low"):
+        rows.append(
+            {
+                "risk": label,
+                "when": "Before",
+                "skus": int((shock["stockout_risk_before"] == label).sum()) if len(shock) else 0,
+            }
+        )
+        rows.append(
+            {
+                "risk": label,
+                "when": "After",
+                "skus": int((shock["stockout_risk_after"] == label).sum()) if len(shock) else 0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def risk_heatmap_frame(shock: pd.DataFrame) -> pd.DataFrame:
+    """Long frame for a before/after risk heatmap. One row per SKU per side."""
+    if shock.empty:
+        return pd.DataFrame(columns=["sku", "when", "risk", "stockout_probability"])
+    before = shock[["sku", "stockout_risk_before", "stockout_probability"]].rename(
+        columns={"stockout_risk_before": "risk"}
+    )
+    before["when"] = "Before"
+    after = shock[["sku", "stockout_risk_after", "stockout_probability"]].rename(
+        columns={"stockout_risk_after": "risk"}
+    )
+    after["when"] = "After"
+    return pd.concat([before, after], ignore_index=True)
+
+
+def format_stockout_week(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if math.isinf(number):
+        return "No stockout"
+    return f"{number:.1f}"
+
+
+def format_shock_table(shock: pd.DataFrame, flips_only: bool = False) -> pd.DataFrame:
+    frame = shock[shock["risk_flipped"]] if flips_only else shock
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "SKU",
+                "Risk before",
+                "Risk after",
+                "Projected stockout week",
+                "Stockout probability",
+                "Emergency order",
+            ]
+        )
+    order = frame["emergency_order_qty"].map(lambda qty: round(float(qty), 1))
+    return pd.DataFrame(
+        {
+            "SKU": frame["sku"].to_numpy(),
+            "Risk before": frame["stockout_risk_before"].to_numpy(),
+            "Risk after": frame["stockout_risk_after"].to_numpy(),
+            "Projected stockout week": frame["projected_stockout_week"].map(format_stockout_week).to_numpy(),
+            "Stockout probability": frame["stockout_probability"].map(lambda p: f"{100.0 * float(p):.1f}%").to_numpy(),
+            "Emergency order": order.to_numpy(),
+        }
+    )
+
+
+def describe_shock(
+    shock: pd.DataFrame,
+    extra_lead_weeks: float,
+    spike_pct: float,
+    spike_weeks: float,
+) -> str:
+    """Plain-language scenario summary used on its own and as the Gemma fallback."""
+    delay = _clean_weeks(extra_lead_weeks)
+    pct = 0.0 if pd.isna(spike_pct) else max(float(spike_pct), 0.0)
+    window = _clean_weeks(spike_weeks)
+    n = int(len(shock))
+    flipped = shock[shock["risk_flipped"]] if n else shock
+    high_after = int((shock["stockout_risk_after"] == "High").sum()) if n else 0
+    total_order = float(shock["emergency_order_qty"].sum()) if n else 0.0
+    likely = shock[shock["stockout_probability"] >= 0.5] if n else shock
+
+    parts = [
+        (
+            f"Scenario: supplier delay of {delay:.0f} extra week{'s' if delay != 1 else ''}, "
+            f"and a {pct:.0f}% demand spike for {window:.0f} week{'s' if window != 1 else ''}."
+        )
+    ]
+    if n == 0:
+        parts.append("No SKUs are loaded for this scenario.")
+        return " ".join(parts)
+    parts.append(
+        f"{len(flipped)} of {n} SKUs move to a higher stockout risk. "
+        f"{high_after} SKUs would be high risk after the shock."
+    )
+    if len(flipped):
+        names = ", ".join(flipped["sku"].astype(str).head(5).tolist())
+        parts.append(f"Largest risk increases include {names}.")
+    else:
+        parts.append("No SKU moves into a worse risk band under this scenario.")
+    if len(likely):
+        parts.append(
+            f"{len(likely)} SKUs have a stockout probability of at least 50% "
+            "before the delayed replenishment arrives."
+        )
+    parts.append(
+        f"Recommended emergency orders total {total_order:,.0f} units, "
+        "the gap between on-hand stock and the reorder point after the shock."
+    )
+    return " ".join(parts)
