@@ -1,7 +1,19 @@
 import streamlit as st
 import pandas as pd
-from pathlib import Path
 
+from inventory_logic import (
+    DEFAULT_SERVICE_LEVEL,
+    SERVICE_LEVELS,
+    accuracy_display_table,
+    apply_service_level,
+    eligible_forecast_skus,
+    forecast_accuracy_check,
+    format_abc_summary,
+    format_risk_board,
+    format_service_snapshot,
+    service_level_message,
+    service_level_snapshot,
+)
 from main import DATA_DIR, OUTPUT_DIR, SupplyChainAgent, run_pipeline
 
 
@@ -310,14 +322,20 @@ def _load_existing_summary():
     return None, path
 
 
-def _risk_sort_key(series: pd.Series) -> pd.Series:
-    order = {
-        "CRITICAL (Below ROP)": 0,
-        "High": 1,
-        "Medium": 2,
-        "Low": 3,
-    }
-    return series.map(lambda x: order.get(x, 9))
+def _default_file_index(options):
+    preferred = "week_2026-04-13_demo.csv"
+    if preferred in options:
+        return options.index(preferred)
+    return 0 if options else None
+
+
+def _accuracy_for(raw_df: pd.DataFrame, sku: str, source_file: str):
+    """Fit the holdout once per file and SKU, not on every sidebar tweak."""
+    key = (source_file, sku, id(raw_df))
+    if st.session_state.get("accuracy_key") != key:
+        st.session_state["accuracy_key"] = key
+        st.session_state["accuracy_result"] = forecast_accuracy_check(raw_df, sku)
+    return st.session_state["accuracy_result"]
 
 
 # ---------- Sidebar ----------
@@ -330,7 +348,7 @@ with st.sidebar:
     selected_file = st.selectbox(
         "Weekly CSV",
         options=file_options,
-        index=0 if file_options else None,
+        index=_default_file_index(file_options),
         placeholder="No CSV files in data/weekly",
     )
 
@@ -344,6 +362,13 @@ with st.sidebar:
         help="Upload a weekly inventory CSV to analyze.",
     )
 
+    service_level = st.selectbox(
+        "Service level",
+        options=list(SERVICE_LEVELS.keys()),
+        index=list(SERVICE_LEVELS.keys()).index(DEFAULT_SERVICE_LEVEL),
+        format_func=lambda level: f"{level} (Z={SERVICE_LEVELS[level]:.2f})",
+        help="Safety stock = Z × weekly demand SD × sqrt(lead time in weeks). 90% uses Z=1.28, 95% uses Z=1.65, 99% uses Z=2.33.",
+    )
     forecast_weeks = st.slider("Forecast horizon (weeks)", 2, 16, 8)
     with_report = st.toggle("Generate LLM report", value=False)
     st.markdown(
@@ -375,7 +400,7 @@ st.markdown(
 <div class="hero">
   <p class="brand-kicker">Supply chain intelligence</p>
   <p class="brand-title">Clear inventory risk, when you need it.</p>
-  <p class="brand-sub">Forecast demand, flag reorder breaches, and ask the copilot — all from your weekly CSV.</p>
+  <p class="brand-sub">Forecast demand, check it against a holdout, set service-level safety stock, and ask the copilot — all from your weekly CSV.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -392,6 +417,7 @@ if run_button:
                 sample_file=selected_file,
                 forecast_weeks=forecast_weeks,
                 generate_report=with_report,
+                service_level=service_level,
             )
         if result is None:
             st.error("Pipeline failed. Check the CSV columns and try again.")
@@ -424,9 +450,10 @@ if result is None:
         st.stop()
 
 
-summary_df = result["full_summary"]
+summary_df = apply_service_level(result["full_summary"], service_level)
 raw_df = result.get("raw_df")
 report = result.get("report") or ""
+unit_cost_source = result.get("unit_cost_source")
 
 critical_mask = summary_df["stockout_risk"].astype(str).str.contains(
     "CRITICAL|High", regex=True
@@ -444,24 +471,110 @@ c3.metric("High / critical risk", critical_count)
 c4.metric("Avg days to stockout", f"{avg_days:.1f}")
 
 
-tabs = st.tabs(["Risk board", "Raw weeks", "Written report", "Copilot"])
+tabs = st.tabs(
+    ["Risk board", "Forecast accuracy", "ABC summary", "Raw weeks", "Written report", "Copilot"]
+)
 
 with tabs[0]:
-    st.markdown("##### What needs attention")
-    board = summary_df.copy()
-    board["_risk_rank"] = _risk_sort_key(board["stockout_risk"])
-    board = board.sort_values(["_risk_rank", "days_to_stockout"]).drop(
-        columns=["_risk_rank"]
+    st.markdown("##### Service level, safety stock, and reorder point")
+    st.caption(
+        "Safety stock = Z × weekly demand SD × √(lead time in weeks). "
+        "Reorder point = average weekly demand × lead time in weeks + safety stock. "
+        f"The risk board uses {service_level} (Z={SERVICE_LEVELS[service_level]:.2f})."
     )
-    st.dataframe(board, use_container_width=True, hide_index=True)
+    level_columns = {"weekly_demand_sd", "avg_weekly_demand", "lead_time_weeks"}
+    if level_columns.issubset(summary_df.columns):
+        snapshot = service_level_snapshot(summary_df)
+        st.dataframe(
+            format_service_snapshot(snapshot),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(service_level_message(snapshot))
+    else:
+        st.caption("Re-run the analysis to compare 90%, 95%, and 99% on this file.")
+
+    st.markdown("##### What needs attention")
+    st.caption("High risk is sorted first. Weeks of cover compare on-hand stock with forecast weekly demand.")
+    st.dataframe(format_risk_board(summary_df), use_container_width=True, hide_index=True)
 
 with tabs[1]:
+    st.markdown("##### Forecast accuracy check")
+    st.caption(
+        "For a frequently sold SKU, the last 4 weeks are held out. "
+        "Holt-Winters is fit on earlier weeks only and compared with a naive baseline "
+        "that repeats the previous week's demand. Test weeks are not used in training."
+    )
+    if raw_df is None:
+        st.caption("Run a fresh analysis to check a SKU. A saved summary does not include weekly history.")
+    else:
+        sku_choices = eligible_forecast_skus(raw_df)
+        if not sku_choices:
+            st.warning(
+                "No SKU in this file has enough weekly history for a 4-week holdout "
+                "(at least 8 weeks with demand)."
+            )
+        else:
+            accuracy_sku = st.selectbox(
+                "Frequently sold SKU",
+                options=sku_choices,
+                help="Most-sold SKUs are listed first. Only SKUs with enough weekly history are shown.",
+            )
+            with st.spinner("Fitting Holt-Winters on earlier weeks…"):
+                check = _accuracy_for(
+                    raw_df,
+                    accuracy_sku,
+                    result.get("source_file") or "",
+                )
+            if check.get("status") != "ok":
+                st.warning(check.get("message", "Not enough history for this SKU."))
+            else:
+                st.dataframe(
+                    accuracy_display_table(check),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                if check["winner"] == "Holt-Winters":
+                    st.success(check["message"])
+                elif check["winner"] == "Naive baseline":
+                    st.info(check["message"])
+                else:
+                    st.info(check["message"])
+
+with tabs[2]:
+    st.markdown("##### ABC classification")
+    st.caption(
+        "Usage value = annual demand × unit cost. SKUs are sorted from highest usage value "
+        "to lowest. A is the first 80% of usage value, B the next 15%, and C the remaining 5%."
+    )
+    if unit_cost_source == "sample":
+        st.caption(
+            "This file has no unit cost column, so sample planning prices were applied "
+            "(Reagent $48, Consumable $6.50, Equipment $125, Chemical $22, other $15, "
+            "then a stable per-SKU adjustment). See the README."
+        )
+    elif unit_cost_source == "mixed":
+        st.caption("Missing unit costs were filled with the documented sample prices. See the README.")
+    elif unit_cost_source == "file":
+        st.caption("Unit cost came from the weekly file.")
+    abc_table = format_abc_summary(summary_df)
+    if abc_table.empty:
+        st.caption("Re-run the analysis to build the ABC summary for this file.")
+    else:
+        st.dataframe(abc_table, use_container_width=True, hide_index=True)
+        usage_pct = pd.to_numeric(abc_table["% of usage value"], errors="coerce").sum()
+        sku_pct = pd.to_numeric(abc_table["% of SKUs"], errors="coerce").sum()
+        st.caption(
+            f"Usage value shares sum to {usage_pct:.1f}%. SKU shares sum to {sku_pct:.1f}%."
+        )
+
+with tabs[3]:
     if raw_df is not None:
         st.dataframe(raw_df, use_container_width=True, hide_index=True)
     else:
         st.caption("Raw weekly rows appear after you run a fresh analysis in this session.")
 
-with tabs[2]:
+with tabs[4]:
     if report.strip():
         st.markdown(report)
         st.download_button(
@@ -473,7 +586,7 @@ with tabs[2]:
     else:
         st.warning("No report text yet. Enable LLM report in the sidebar and re-run.")
 
-with tabs[3]:
+with tabs[5]:
     st.markdown("##### Ask the inventory copilot")
     st.caption(
         "Try: *Which items are below reorder point?* · *Show high risk items* · *Status for SKU …*"
