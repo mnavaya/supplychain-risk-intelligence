@@ -1,9 +1,8 @@
 import pandas as pd
-import numpy as np
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 import re
 import ollama
+
+from inventory_logic import forecast_accuracy_check
 
 # ==========================================
 # GLOBAL CONSTANTS (CENTRALIZED)
@@ -16,22 +15,25 @@ FORECAST_HORIZON = 2
 
 
 def backtest_forecast(df, sku, forecast_horizon=FORECAST_HORIZON):
-    sku_df = df[df['sku'] == sku].sort_values('week')
-    data = sku_df['consumption'].values
-    if len(data) <= forecast_horizon + 2:
+    """Hold out the last weeks and score Holt-Winters against a naive baseline.
+
+    Delegates to forecast_accuracy_check so the validation script cannot fit
+    on a different split than the Streamlit accuracy tab.
+    """
+    result = forecast_accuracy_check(
+        df,
+        sku,
+        holdout_weeks=forecast_horizon,
+        min_train_weeks=2,
+    )
+    if result["status"] != "ok":
         return {"sku": sku, "status": "Insufficient data"}
-    train = data[:-forecast_horizon]
-    test = data[-forecast_horizon:]
-    model = ExponentialSmoothing(train, trend='add', seasonal=None)
-    fit = model.fit()
-    forecast = fit.forecast(forecast_horizon)
-    mae = mean_absolute_error(test, forecast)
-    rmse = np.sqrt(mean_squared_error(test, forecast))
-    epsilon = 1e-10
-    mape = np.mean(np.abs((test - forecast) / (test + epsilon))) * 100
     return {
-        "sku": sku, "status": "Success",
-        "MAE": round(mae, 2), "RMSE": round(rmse, 2), "MAPE": round(mape, 2)
+        "sku": sku,
+        "status": "Success",
+        "MAE": round(result["mae_holt_winters"], 2),
+        "MAE_naive": round(result["mae_naive"], 2),
+        "winner": result["winner"],
     }
 
 

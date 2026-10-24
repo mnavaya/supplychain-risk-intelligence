@@ -1,22 +1,76 @@
 import pandas as pd
-import numpy as np
 from pathlib import Path
 import ollama
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import warnings
 import time
 import datetime
 
+from inventory_logic import (
+    DEFAULT_LEAD_TIME_DAYS,
+    DEFAULT_SERVICE_LEVEL,
+    SERVICE_LEVELS,
+    annual_demand_from_weekly,
+    apply_service_level,
+    attach_unit_cost,
+    classify_abc,
+    classify_cover_risk,
+    describe_shock,
+    forecast_mean_demand,
+    format_weeks_of_cover,
+    sort_risk_table,
+    weekly_series,
+    z_for_service_level,
+)
+
 warnings.filterwarnings("ignore")
 
-# Directory setup
+# Directory setup. Cloud disks can reject writes; the UI still runs from memory.
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data" / "weekly"
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "reports"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GEMMA_MODEL = "gemma2:2b"
+# A missing local model must fail fast instead of hanging a public demo.
+GEMMA_TIMEOUT_SECONDS = 8.0
 
-# Service level factor: Z-Score for 95% protection against stockouts
-Z_SCORE = 1.645
+
+def _ensure_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _write_text(path: Path, text: str) -> bool:
+    if not _ensure_dir(path.parent):
+        return False
+    try:
+        path.write_text(text, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _write_csv(frame: pd.DataFrame, path: Path) -> bool:
+    if not _ensure_dir(path.parent):
+        return False
+    try:
+        frame.to_csv(path, index=False)
+        return True
+    except OSError:
+        return False
+
+
+_ensure_dir(OUTPUT_DIR)
+
+
+def _gemma_chat(messages):
+    """Call local Gemma 2. Times out quickly when Ollama is not running."""
+    client = ollama.Client(timeout=GEMMA_TIMEOUT_SECONDS)
+    return client.chat(model=GEMMA_MODEL, messages=messages)
+
+# Default service-level factor (95%). Other levels live in SERVICE_LEVELS.
+Z_SCORE = SERVICE_LEVELS[DEFAULT_SERVICE_LEVEL]
 
 
 # ====================== DATA INGESTION & CLEANING ======================
@@ -38,80 +92,111 @@ def load_and_clean_weekly_data(filename: str):
     return df
 
 
+def _latest_number(sku_data: pd.DataFrame, column: str, default: float) -> float:
+    if column not in sku_data.columns or sku_data.empty:
+        return float(default)
+    value = pd.to_numeric(sku_data[column], errors="coerce").iloc[-1]
+    if pd.isna(value):
+        return float(default)
+    return float(value)
+
+
+def _latest_text(sku_data: pd.DataFrame, column: str, default=""):
+    if column not in sku_data.columns or sku_data.empty:
+        return default
+    value = sku_data[column].iloc[-1]
+    if pd.isna(value):
+        return default
+    return value
+
+
 # ====================== ADVANCED FORECASTING & METRICS ======================
-def forecast_and_stockout(df, forecast_weeks: int = 8):
+def forecast_and_stockout(
+    df,
+    forecast_weeks: int = 8,
+    service_level: str = DEFAULT_SERVICE_LEVEL,
+):
+    """Forecast each SKU and attach safety stock, cover risk, and ABC class.
+
+    Safety stock and the reorder point use `service_level` (90%, 95%, or 99%).
+    ABC class is assigned later from annual usage value, not from volume quantiles.
+    """
+    z_for_service_level(service_level)
+    priced, unit_cost_source = attach_unit_cost(df)
     results = []
 
-    demand_std = df.groupby("sku")["consumption"].std().fillna(0)
-    total_volume = df.groupby("sku")["consumption"].sum()
-    volume_th = total_volume.quantile([0.7, 0.9])
+    for sku in priced["sku"].unique():
+        sku_data = priced[priced["sku"] == sku].copy()
+        sku_data["week"] = pd.to_datetime(sku_data["week"], errors="coerce")
+        sku_data = sku_data.sort_values("week")
+        series = weekly_series(sku_data)
 
-    for sku in df["sku"].unique():
-        sku_data = df[df["sku"] == sku].copy().sort_values("week")
+        current_inv = round(_latest_number(sku_data, "inventory_level", 0.0), 1)
+        # Round before cover and days-of-supply so a displayed 0.0 forecast
+        # takes the zero-demand path instead of dividing by a hidden fraction.
+        forecast_demand = round(
+            forecast_mean_demand(series["consumption"], forecast_weeks), 1
+        )
+        weekly_std = (
+            float(series["consumption"].std(ddof=1)) if len(series) > 1 else 0.0
+        )
+        if pd.isna(weekly_std):
+            weekly_std = 0.0
+        avg_weekly = float(series["consumption"].mean()) if len(series) else 0.0
+        if pd.isna(avg_weekly):
+            avg_weekly = 0.0
 
-        if len(sku_data) < 3:
-            forecast_demand = sku_data["consumption"].iloc[-1] if not sku_data.empty else 0
-        else:
-            try:
-                model = ExponentialSmoothing(
-                    sku_data["consumption"], trend="add", seasonal=None
-                )
-                fit = model.fit()
-                forecast_demand = max(0, fit.forecast(forecast_weeks).mean())
-            except Exception:
-                forecast_demand = (
-                    sku_data["consumption"].rolling(3, min_periods=1).mean().iloc[-1]
-                )
-
-        current_inv = sku_data["inventory_level"].iloc[-1]
-        weekly_std = demand_std.get(sku, 0)
-        lead_time = int(sku_data["lead_time_days"].iloc[-1])
-
+        lead_time = _latest_number(sku_data, "lead_time_days", DEFAULT_LEAD_TIME_DAYS)
         lt_weeks = lead_time / 7.0
-        safety_stock = Z_SCORE * (weekly_std * np.sqrt(lt_weeks))
+        cover = classify_cover_risk(current_inv, forecast_demand, lt_weeks)
 
         daily_demand = forecast_demand / 7.0
-        lead_time_demand = daily_demand * lead_time
-        reorder_point = lead_time_demand + safety_stock
+        days_to_stockout = current_inv / daily_demand if daily_demand > 0 else 999.0
 
-        days_to_stockout = current_inv / daily_demand if daily_demand > 0 else 999
+        annual = annual_demand_from_weekly(series["consumption"])
+        unit_cost = _latest_number(sku_data, "unit_cost", 0.0)
+        usage_value = max(annual, 0.0) * max(unit_cost, 0.0)
 
-        if current_inv <= reorder_point:
-            stockout_risk = "CRITICAL (Below ROP)"
-        elif days_to_stockout < (lead_time + 7):
-            stockout_risk = "High"
-        elif days_to_stockout < 30:
-            stockout_risk = "Medium"
-        else:
-            stockout_risk = "Low"
-
-        sku_vol = total_volume.get(sku, 0)
-        abc_cat = (
-            "A"
-            if sku_vol >= volume_th.iloc[1]
-            else "B"
-            if sku_vol >= volume_th.iloc[0]
-            else "C"
-        )
+        fill_rate = _latest_number(sku_data, "vendor_fill_rate", 0.0)
 
         results.append(
             {
                 "sku": sku,
-                "abc_class": abc_cat,
-                "current_inventory": round(current_inv, 1),
-                "forecast_weekly_demand": round(forecast_demand, 1),
-                "safety_stock": round(safety_stock, 1),
-                "reorder_point": round(reorder_point, 1),
-                "days_to_stockout": round(days_to_stockout, 1),
+                "current_inventory": current_inv,
+                "forecast_weekly_demand": forecast_demand,
+                "avg_weekly_demand": round(max(avg_weekly, 0.0), 4),
+                "weekly_demand_sd": round(max(weekly_std, 0.0), 4),
                 "lead_time_days": lead_time,
-                "stockout_risk": stockout_risk,
-                "vendor_fill_rate": round(sku_data["vendor_fill_rate"].iloc[-1], 2),
-                "vendor_name": sku_data["vendor_name"].iloc[-1],
-                "critical_item": sku_data["critical"].iloc[-1],
+                "lead_time_weeks": round(lt_weeks, 4),
+                "days_to_stockout": round(days_to_stockout, 1),
+                "weeks_of_cover": cover["weeks_of_cover"],
+                "stockout_risk": cover["stockout_risk"],
+                "risk_reason": cover["risk_reason"],
+                "annual_demand": round(annual, 2),
+                "unit_cost": round(unit_cost, 2),
+                "usage_value": round(usage_value, 2),
+                "vendor_fill_rate": round(fill_rate, 2),
+                "vendor_name": _latest_text(sku_data, "vendor_name", ""),
+                "critical_item": _latest_text(sku_data, "critical", ""),
             }
         )
 
-    return pd.DataFrame(results)
+    summary = pd.DataFrame(results)
+    if summary.empty:
+        summary.attrs["unit_cost_source"] = unit_cost_source
+        return summary
+
+    summary = apply_service_level(summary, service_level)
+    classified = classify_abc(summary[["sku", "usage_value"]])
+    summary = summary.merge(
+        classified[["sku", "abc_class", "usage_cum_pct"]],
+        on="sku",
+        how="left",
+    )
+    summary.attrs["unit_cost_source"] = unit_cost_source
+    summary = sort_risk_table(summary)
+    summary.attrs["unit_cost_source"] = unit_cost_source
+    return summary
 
 
 # ====================== FAST LLM REPORT GENERATION ======================
@@ -141,23 +226,75 @@ Write a clean Markdown report with these precise operational sections:
     print("🤖 Processing telemetry exceptions with Gemma 2 (2B)...")
     start = time.time()
     try:
-        response = ollama.chat(
-            model="gemma2:2b", messages=[{"role": "user", "content": prompt}]
-        )
+        response = _gemma_chat([{"role": "user", "content": prompt}])
         report = response["message"]["content"]
     except Exception as e:
         report = (
             f"# Operational Health Report\n\n"
             f"*Error connecting to Gemma 2 model: {str(e)}*\n\n"
-            f"Data summary saved locally."
+            f"Forecasts and the risk board are still available without the model."
         )
 
     report_path = OUTPUT_DIR / "Inventory_Health_Risk_Report.md"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report)
-
-    print(f"✅ Report compiled in {time.time() - start:.1f} seconds → {report_path}")
+    if _write_text(report_path, report):
+        print(f"✅ Report compiled in {time.time() - start:.1f} seconds → {report_path}")
+    else:
+        print(f"✅ Report ready in memory in {time.time() - start:.1f} seconds (disk write skipped).")
     return report
+
+
+def generate_scenario_narrative(
+    shock_df: pd.DataFrame,
+    extra_lead_weeks: float,
+    spike_pct: float,
+    spike_weeks: float,
+) -> dict:
+    """Ask Gemma 2 for a short shock narrative. Fall back to the calculated summary.
+
+    Returns source "gemma2:2b" or "rule". The rule-based text is always in
+    `fallback` so the UI can show the numbers even when the model answers.
+    """
+    fallback = describe_shock(shock_df, extra_lead_weeks, spike_pct, spike_weeks)
+    focus = shock_df.head(12)
+    columns = [
+        column
+        for column in (
+            "sku",
+            "stockout_risk_before",
+            "stockout_risk_after",
+            "projected_stockout_week",
+            "stockout_probability",
+            "emergency_order_qty",
+        )
+        if column in focus.columns
+    ]
+    table = focus[columns].to_string(index=False) if len(focus) else "(no SKUs)"
+    prompt = f"""You are a senior inventory planner. Write two short paragraphs about this supply shock.
+Use ONLY the numbers below. Do not invent SKUs or quantities.
+Name which SKUs get worse, the stockout probability, and the emergency order quantity.
+
+Scenario: {extra_lead_weeks:.0f} extra weeks of supplier delay, {spike_pct:.0f}% demand spike for {spike_weeks:.0f} weeks.
+
+Calculated summary:
+{fallback}
+
+Worst SKUs:
+{table}
+"""
+    try:
+        response = _gemma_chat([{"role": "user", "content": prompt}])
+        narrative = (response.get("message") or {}).get("content") or ""
+        narrative = narrative.strip()
+        if not narrative:
+            raise RuntimeError("Gemma 2 returned an empty narrative")
+        return {"source": "gemma2:2b", "narrative": narrative, "fallback": fallback, "error": ""}
+    except Exception as exc:
+        return {
+            "source": "rule",
+            "narrative": fallback,
+            "fallback": fallback,
+            "error": str(exc),
+        }
 
 
 # ====================== COGNITIVE INTERACTIVE AGENT ======================
@@ -202,14 +339,25 @@ class SupplyChainAgent:
                 match = self.df[self.df["sku"].str.upper() == clean_word]
                 if not match.empty:
                     row = match.iloc[0]
+                    cover_line = ""
+                    if "weeks_of_cover" in row.index and "risk_reason" in row.index:
+                        cover_line = (
+                            f"  • Weeks of cover: {format_weeks_of_cover(row['weeks_of_cover'])}"
+                            f" | Risk: {row['stockout_risk']}\n"
+                            f"  • {row['risk_reason']}\n"
+                        )
+                    level = row["service_level"] if "service_level" in row.index else ""
+                    level_bit = f" | Service level: {level}" if level else ""
                     return (
                         f"📊 **SKU Profile: {row['sku']}** ({row['vendor_name']})\n"
                         f"  • Class: {row['abc_class']} | Critical: {row['critical_item']}\n"
                         f"  • Inventory Level: {row['current_inventory']} units\n"
-                        f"  • Safety Stock: {row['safety_stock']} | ROP: {row['reorder_point']} units\n"
+                        f"  • Safety Stock: {row['safety_stock']} | ROP: {row['reorder_point']} units"
+                        f"{level_bit}\n"
                         f"  • Days to Stockout: {row['days_to_stockout']} "
-                        f"(Lead Time: {row['lead_time_days']} days)"
-                    )
+                        f"(Lead Time: {row['lead_time_days']} days)\n"
+                        f"{cover_line}"
+                    ).rstrip()
             return "🔍 Couldn't match the specific SKU ID. Try entering the precise SKU code."
 
         return (
@@ -225,15 +373,21 @@ def run_pipeline(
     sample_file: str = "week_2026-04-13_demo.csv",
     forecast_weeks: int = 8,
     generate_report: bool = True,
+    service_level: str = DEFAULT_SERVICE_LEVEL,
 ):
     """Run the full inventory intelligence pipeline. Returns None on failure."""
     df = load_and_clean_weekly_data(sample_file)
     if df is None:
         return None
 
-    forecast_df = forecast_and_stockout(df, forecast_weeks=forecast_weeks)
+    forecast_df = forecast_and_stockout(
+        df,
+        forecast_weeks=forecast_weeks,
+        service_level=service_level,
+    )
     summary_path = OUTPUT_DIR.parent / "latest_summary.csv"
-    forecast_df.to_csv(summary_path, index=False)
+    if not _write_csv(forecast_df, summary_path):
+        summary_path = None
 
     report = generate_llm_report(forecast_df) if generate_report else ""
 
@@ -242,6 +396,9 @@ def run_pipeline(
         "full_summary": forecast_df,
         "report": report,
         "summary_path": summary_path,
+        "unit_cost_source": forecast_df.attrs.get("unit_cost_source", "sample"),
+        "service_level": service_level,
+        "source_file": sample_file,
     }
 
 

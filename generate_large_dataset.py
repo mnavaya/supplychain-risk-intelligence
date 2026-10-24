@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 
+from inventory_logic import sample_unit_cost
+
 # ====================== CONFIG ======================
 NUM_ROWS = 59898
 NUM_SKUS = 50                     # Changed to 50 as you requested
@@ -67,7 +69,9 @@ for sku in skus:
             'vendor_fill_rate': fill_rate,
             'vendor_name': vendor,
             'category': category,
-            'critical': 'Yes' if is_critical else 'No'
+            'critical': 'Yes' if is_critical else 'No',
+            # Documented sample price. Real weekly files can supply their own unit_cost.
+            'unit_cost': sample_unit_cost(sku, category),
         })
 
 df = pd.DataFrame(data)
