@@ -69,10 +69,14 @@ def _write_csv(frame: pd.DataFrame, path: Path) -> bool:
 _ensure_dir(OUTPUT_DIR)
 
 
-def _gemma_chat(messages):
+def _gemma_chat(messages, options=None):
     """Call local Gemma 2. Times out quickly when Ollama is not running."""
     client = ollama.Client(timeout=GEMMA_TIMEOUT_SECONDS)
-    return client.chat(model=GEMMA_MODEL, messages=messages)
+    kwargs = {"model": GEMMA_MODEL, "messages": messages}
+    # Copilot answers pass a token cap so a reply can finish inside the timeout.
+    if options:
+        kwargs["options"] = options
+    return client.chat(**kwargs)
 
 # Default service-level factor (95%). Other levels live in SERVICE_LEVELS.
 Z_SCORE = SERVICE_LEVELS[DEFAULT_SERVICE_LEVEL]
@@ -307,23 +311,18 @@ Worst SKUs:
 # Every number in the reply has to come from that slice. Otherwise the
 # original keyword answer is what the user sees.
 COPILOT_ROW_LIMIT = 15
+# Compact on purpose: Gemma 2 has to read this and answer inside 8 seconds.
 COPILOT_TABLE_COLUMNS = [
     "sku",
     "abc_class",
     "stockout_risk",
     "weeks_of_cover",
-    "current_inventory",
-    "forecast_weekly_demand",
-    "reorder_point",
-    "safety_stock",
-    "days_to_stockout",
-    "lead_time_days",
     "lead_time_weeks",
+    "current_inventory",
+    "reorder_point",
+    "days_to_stockout",
     "vendor_fill_rate",
-    "service_level",
     "vendor_name",
-    "critical_item",
-    "risk_reason",
 ]
 COPILOT_ROUND = {
     "weeks_of_cover": 1,
@@ -651,17 +650,73 @@ def copilot_table_text(rows: pd.DataFrame) -> str:
     return buffer.getvalue().strip()
 
 
+_SKU_TOKEN_RE = re.compile(r"(?<![A-Z0-9])SKU-\d+(?![A-Z0-9])", re.IGNORECASE)
+# "stockout_risk" is a column name, not a claim that something stocked out.
+_RUNOUT_RE = re.compile(
+    r"\brun\s*out\b|\bruns\s+out\b|\brunning\s+out\b|\bstock-?out\b|\bhigh risk\b",
+    re.IGNORECASE,
+)
+_NEGATION_RE = re.compile(r"\b(none|no|not|n't|without)\b", re.IGNORECASE)
+# Long enough for about three sentences, short enough to return before the 8s timeout.
+COPILOT_MAX_TOKENS = 120
+
+
 def _copilot_prompt(question: str, rows: pd.DataFrame) -> str:
     table = copilot_table_text(rows)
+    # Kept short on purpose. Gemma 2 has to finish inside the 8-second helper.
     return f"""You are an inventory planner. Answer the question using ONLY the table below.
-Do not invent SKUs, quantities, dates, or risks. If the table does not contain the answer, say so.
-Name every SKU you use. Every number you mention must be copied from the table (rounding a value to a whole number is fine).
+Do not invent SKUs or numbers. Quote stockout_risk for every SKU you name.
+Say an item runs out only when its stockout_risk is High. Low and Medium do not run out before the next delivery.
+If no row matches, say so. Write at most 3 short sentences.
 
 Question: {question}
 
 Rows:
 {table}
 """
+
+
+def answer_conflicts_with_rows(answer: str, rows: pd.DataFrame) -> str:
+    """Return a reason to reject the reply, or '' when the claims match the rows.
+
+    Number checks cannot see a Low SKU described as running out, because the
+    SKU's own digits are already in the table. This catches that, and SKU
+    codes that were not in the rows at all.
+    """
+    if not answer:
+        return ""
+    frame = rows if isinstance(rows, pd.DataFrame) else pd.DataFrame()
+    known = set()
+    risk_by_sku = {}
+    if not frame.empty and "sku" in frame.columns:
+        known = {str(sku).upper() for sku in frame["sku"]}
+        if "stockout_risk" in frame.columns:
+            risk_by_sku = {
+                str(sku).upper(): str(risk)
+                for sku, risk in zip(frame["sku"], frame["stockout_risk"])
+            }
+    unknown = []
+    for match in _SKU_TOKEN_RE.finditer(answer):
+        token = match.group(0).upper()
+        if token not in known and token not in unknown:
+            unknown.append(token)
+    if unknown:
+        return "unknown sku: " + ", ".join(unknown[:5])
+
+    for sentence in re.split(r"[.!?\n]", answer):
+        if not _RUNOUT_RE.search(sentence) or _NEGATION_RE.search(sentence):
+            continue
+        named = [match.group(0).upper() for match in _SKU_TOKEN_RE.finditer(sentence)]
+        if not named:
+            high = any("High" in risk or "CRITICAL" in risk for risk in risk_by_sku.values())
+            if risk_by_sku and not high:
+                return "run-out claim without a high-risk row"
+            continue
+        for token in named:
+            risk = risk_by_sku.get(token, "")
+            if "High" not in risk and "CRITICAL" not in risk:
+                return f"{token} is {risk or 'not high risk'}"
+    return ""
 
 
 def present_copilot_rows(rows: pd.DataFrame) -> pd.DataFrame:
@@ -696,20 +751,24 @@ class SupplyChainAgent:
         rows = select_copilot_rows(self.df, question)
         keyword = self._keyword_answer(question)
         try:
-            response = _gemma_chat([{"role": "user", "content": _copilot_prompt(question, rows)}])
+            response = _gemma_chat(
+                [{"role": "user", "content": _copilot_prompt(question, rows)}],
+                options={"num_predict": COPILOT_MAX_TOKENS, "temperature": 0},
+            )
             message = (response or {}).get("message") or {}
             content = str(message.get("content") or "").strip()
             if not content:
                 raise RuntimeError("Gemma 2 returned an empty answer")
             verdict = check_answer_grounding(content, rows)
-            if verdict != "grounded":
-                unverified = verdict if isinstance(verdict, list) else [verdict]
+            conflict = answer_conflicts_with_rows(content, rows)
+            if verdict != "grounded" or conflict:
+                unverified = verdict if isinstance(verdict, list) else []
                 return CopilotReply(
                     keyword,
                     "rule-based",
                     rows,
                     unverified=unverified,
-                    error="ungrounded",
+                    error=conflict or "ungrounded",
                 )
             return CopilotReply(content, "grounded", rows)
         except Exception as exc:

@@ -141,7 +141,7 @@ class CopilotFallbackTests(unittest.TestCase):
         frame = _summary()
         agent = SupplyChainAgent(frame)
 
-        def fake(_messages):
+        def fake(_messages, options=None):
             return {"message": {"content": "Buy 424242 units of SKU-00001 immediately."}}
 
         with patch("main._gemma_chat", fake):
@@ -159,8 +159,9 @@ class CopilotFallbackTests(unittest.TestCase):
         question = "Which A-class items run out before their next delivery?"
         captured = {}
 
-        def fake(messages):
+        def fake(messages, options=None):
             captured["prompt"] = messages[0]["content"]
+            captured["options"] = options
             return {
                 "message": {
                     "content": (
@@ -181,6 +182,42 @@ class CopilotFallbackTests(unittest.TestCase):
         self.assertNotIn("SKU-00002", captured["prompt"])
         self.assertNotIn("SKU-00003", captured["prompt"])
         self.assertIn(question, captured["prompt"])
+        self.assertEqual(captured["options"]["num_predict"], 120)
+        self.assertEqual(captured["options"]["temperature"], 0)
+
+    def test_fallback_when_the_model_calls_a_low_risk_sku_a_runout(self):
+        frame = _summary()
+        agent = SupplyChainAgent(frame)
+
+        def fake(_messages, options=None):
+            return {"message": {"content": "SKU-00002 runs out before the next delivery."}}
+
+        with patch("main._gemma_chat", fake):
+            reply = agent.query("How are the A-class items doing?")
+
+        self.assertEqual(reply.source, "rule-based")
+        self.assertNotIn("runs out", str(reply).lower())
+        self.assertIn("SKU-00002", reply.error)
+
+    def test_quoting_stockout_risk_is_not_treated_as_a_runout_claim(self):
+        frame = _summary()
+        agent = SupplyChainAgent(frame)
+
+        def fake(_messages, options=None):
+            return {
+                "message": {
+                    "content": (
+                        "SKU-00002 has a stockout_risk of Low. "
+                        "On hand is 48 and the reorder point is 12."
+                    )
+                }
+            }
+
+        with patch("main._gemma_chat", fake):
+            reply = agent.query("How are the A-class items doing?")
+
+        self.assertEqual(reply.source, "grounded")
+        self.assertIn("48", reply.answer)
 
     def test_a_class_runout_question_selects_those_rows_only(self):
         selected = select_copilot_rows(

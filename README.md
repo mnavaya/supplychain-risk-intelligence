@@ -97,7 +97,7 @@ The Copilot tab accepts a normal question, such as "Which A-class items run out 
 
 - The question is matched to forecast rows by SKU code, ABC class (A-class, class B), or risk words (run out, stockout, high risk, reorder, below ROP). Those filters combine. If the question names none of them, the 15 highest-risk rows are used.
 - Only that compact table is sent to local Gemma 2 (`gemma2:2b`) through the same 8-second helper as the shock narrative. The prompt tells the model to answer from the table and to name the SKUs it uses.
-- A grounding check reads every number in the reply. The number has to appear in the supplied rows, or be a trivial derivation: rounding to a whole number or one or two decimals, a fill rate written as a percent, a row count, a column total, or a within-row gap such as on-hand minus reorder point. The reply is then marked **grounded**.
+- A grounding check reads every number in the reply. The number has to appear in the supplied rows, or be a trivial derivation: rounding to a whole number or one or two decimals, a fill rate written as a percent, a row count, a column total, or a within-row gap such as on-hand minus reorder point. A reply that names a SKU outside that table, or says a Low or Medium SKU runs out, is rejected too. A reply that passes is marked **grounded**.
 - If any number does not check out, Ollama is not running, or the call fails, the original keyword answer is shown instead and marked **rule-based**. The hosted Streamlit demo has no Ollama, so it stays on that path.
 - The Copilot tab shows the answer, the badge, and a collapsible **Rows used** table. The terminal copilot prints the same label after the answer.
 
