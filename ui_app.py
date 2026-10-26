@@ -23,7 +23,14 @@ from inventory_logic import (
     service_level_snapshot,
     simulate_supply_shock,
 )
-from main import DATA_DIR, OUTPUT_DIR, SupplyChainAgent, generate_scenario_narrative, run_pipeline
+from main import (
+    DATA_DIR,
+    OUTPUT_DIR,
+    SupplyChainAgent,
+    generate_scenario_narrative,
+    present_copilot_rows,
+    run_pipeline,
+)
 
 
 st.set_page_config(
@@ -417,6 +424,32 @@ def _shock_heatmap(shock: pd.DataFrame) -> alt.Chart:
     return _dark_chart(chart)
 
 
+def _render_copilot_turn(message: dict):
+    """Answer, grounded / rule-based badge, and the rows sent to Gemma."""
+    source = message.get("source")
+    if source == "grounded":
+        st.badge("grounded", color="green")
+        st.caption("Gemma 2 answered from the rows below. Each number was checked against those rows.")
+    elif source == "rule-based":
+        st.badge("rule-based", color="gray")
+        st.caption(
+            "Rule-based answer. Gemma 2 was unavailable, or a number in its reply was not in the rows below."
+        )
+    st.markdown(message.get("content") or "")
+    rows = message.get("rows")
+    if isinstance(rows, pd.DataFrame):
+        with st.expander("Rows used", expanded=True):
+            if rows.empty:
+                st.caption("No forecast rows matched this question.")
+            else:
+                st.dataframe(
+                    present_copilot_rows(rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption("Highest risk first, at most 15 rows, selected for this question.")
+
+
 def _accuracy_for(raw_df: pd.DataFrame, sku: str, source_file: str):
     """Fit the holdout once per file and SKU, not on every sidebar tweak."""
     key = (source_file, sku, id(raw_df))
@@ -465,6 +498,7 @@ with st.sidebar:
   <strong>Note:</strong> The written LLM report needs <strong>Ollama</strong> running locally with <strong>gemma2:2b</strong>.
   On Streamlit Cloud this is expected to fail — leave this toggle off.
   Forecasts, the risk board, metrics, and the Copilot still work without Ollama.
+  Free-form Copilot questions use Gemma 2 when it is running; otherwise the answer is marked rule-based.
   For the full report: install Ollama from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a>,
   run <code>ollama pull gemma2:2b</code>, then use this app on your laptop with the toggle on.
 </div>
@@ -764,7 +798,8 @@ with tabs[5]:
 with tabs[6]:
     st.markdown("##### Ask the inventory copilot")
     st.caption(
-        "Try: *Which items are below reorder point?* · *Show high risk items* · *Status for SKU …*"
+        "Try: *Which A-class items run out before their next delivery?* · "
+        "*Which items are below reorder point?* · *Show high risk items* · *Status for SKU …*"
     )
 
     agent = SupplyChainAgent(summary_df)
@@ -773,16 +808,26 @@ with tabs[6]:
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            if msg["role"] == "assistant":
+                _render_copilot_turn(msg)
+            else:
+                st.markdown(msg["content"])
 
     if prompt := st.chat_input("Ask about this week's stock"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
+        with st.spinner("Asking Gemma 2…"):
+            reply = agent.query(prompt)
+        turn = {
+            "role": "assistant",
+            "content": str(reply),
+            "source": reply.source,
+            "rows": reply.rows,
+        }
         with st.chat_message("assistant"):
-            answer = agent.query(prompt)
-            st.markdown(answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+            _render_copilot_turn(turn)
+        st.session_state.messages.append(turn)
 
 
 st.markdown(

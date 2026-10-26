@@ -1,3 +1,7 @@
+import csv
+import io
+import math
+import re
 import pandas as pd
 from pathlib import Path
 import ollama
@@ -8,6 +12,7 @@ import datetime
 from inventory_logic import (
     DEFAULT_LEAD_TIME_DAYS,
     DEFAULT_SERVICE_LEVEL,
+    RISK_BOARD_RENAME,
     SERVICE_LEVELS,
     annual_demand_from_weekly,
     apply_service_level,
@@ -297,12 +302,420 @@ Worst SKUs:
         }
 
 
+# ====================== GROUNDED COPILOT Q&A ======================
+# Free-form questions go to local Gemma with a small slice of the forecast.
+# Every number in the reply has to come from that slice. Otherwise the
+# original keyword answer is what the user sees.
+COPILOT_ROW_LIMIT = 15
+COPILOT_TABLE_COLUMNS = [
+    "sku",
+    "abc_class",
+    "stockout_risk",
+    "weeks_of_cover",
+    "current_inventory",
+    "forecast_weekly_demand",
+    "reorder_point",
+    "safety_stock",
+    "days_to_stockout",
+    "lead_time_days",
+    "lead_time_weeks",
+    "vendor_fill_rate",
+    "service_level",
+    "vendor_name",
+    "critical_item",
+    "risk_reason",
+]
+COPILOT_ROUND = {
+    "weeks_of_cover": 1,
+    "current_inventory": 1,
+    "forecast_weekly_demand": 1,
+    "reorder_point": 1,
+    "safety_stock": 1,
+    "days_to_stockout": 1,
+    "lead_time_days": 1,
+    "lead_time_weeks": 2,
+    "vendor_fill_rate": 2,
+    "avg_weekly_demand": 2,
+    "weekly_demand_sd": 2,
+    "unit_cost": 2,
+    "annual_demand": 2,
+    "usage_value": 2,
+}
+# Gaps a planner might state without a new fact: on-hand versus reorder point,
+# cover versus lead time, and the safety-stock piece of the reorder point.
+COPILOT_DIFF_PAIRS = (
+    ("current_inventory", "reorder_point"),
+    ("current_inventory", "safety_stock"),
+    ("reorder_point", "safety_stock"),
+    ("weeks_of_cover", "lead_time_weeks"),
+    ("days_to_stockout", "lead_time_days"),
+    ("forecast_weekly_demand", "avg_weekly_demand"),
+)
+_NUMBER_RE = re.compile(
+    r"(?<![\w.])(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+\.\d+|-?\d+)%?(?!\w)"
+)
+_CLASS_PATTERNS = (
+    re.compile(r"\b([ABCabc])\s*-\s*class\b", re.IGNORECASE),
+    re.compile(r"\b([ABC])\s+class\b"),
+    re.compile(r"\bclass\s*-?\s*([ABCabc])\b", re.IGNORECASE),
+    re.compile(r"\babc\s*-?\s*([ABCabc])\b", re.IGNORECASE),
+)
+
+
+class CopilotReply:
+    """One copilot turn: the text to show, where it came from, and the rows behind it.
+
+    `source` is "grounded" when Gemma 2 answered from those rows and every
+    number checked out, or "rule-based" when the keyword answer was used.
+    """
+
+    def __init__(self, answer: str, source: str, rows: pd.DataFrame, unverified=None, error: str = ""):
+        self.answer = answer
+        self.source = source
+        self.rows = rows if isinstance(rows, pd.DataFrame) else pd.DataFrame()
+        self.unverified = list(unverified or [])
+        self.error = error
+
+    def __str__(self) -> str:
+        return self.answer
+
+    def __repr__(self) -> str:
+        return f"CopilotReply(source={self.source!r}, unverified={self.unverified!r})"
+
+
+def _extract_numbers(text: str):
+    """Numbers in reading order. Integers stay ints; 1,220 and 86% count."""
+    found = []
+    if not text:
+        return found
+    for match in _NUMBER_RE.finditer(str(text)):
+        token = match.group(1).replace(",", "")
+        try:
+            found.append(float(token) if "." in token else int(token))
+        except ValueError:
+            continue
+    return found
+
+
+def _nearly(left, right) -> bool:
+    return abs(float(left) - float(right)) <= 1e-6 * max(1.0, abs(float(right)))
+
+
+def _supports(number, base) -> bool:
+    """True when `number` is `base`, a 0/1/2-decimal rounding of it, or a percent form."""
+    if not math.isfinite(base) or not math.isfinite(float(number)):
+        return False
+    candidates = [float(base)]
+    for digits in (0, 1, 2):
+        candidates.append(float(round(float(base), digits)))
+    # Fill rates are stored as 0.86. An answer that says 86% is the same fact.
+    if abs(float(base)) <= 1.5:
+        scaled = float(base) * 100.0
+        candidates.append(scaled)
+        for digits in (0, 1, 2):
+            candidates.append(float(round(scaled, digits)))
+    return any(_nearly(number, candidate) for candidate in candidates)
+
+
+def _finite_values(series: pd.Series):
+    values = []
+    for value in pd.to_numeric(series, errors="coerce").tolist():
+        if pd.isna(value):
+            continue
+        number = float(value)
+        if math.isfinite(number):
+            values.append(number)
+    return values
+
+
+def _base_numbers(rows: pd.DataFrame):
+    """Cell values plus counts, column sums, and a few within-row gaps."""
+    bases = []
+    if rows is None or len(rows) == 0:
+        return bases
+    numeric = {column: _finite_values(rows[column]) for column in rows.columns}
+    for values in numeric.values():
+        bases.extend(values)
+        if values:
+            bases.append(float(sum(values)))
+    for column in rows.columns:
+        for raw in rows[column].tolist():
+            if isinstance(raw, str):
+                bases.extend(float(number) for number in _extract_numbers(raw))
+    bases.append(float(len(rows)))
+    for column in ("abc_class", "stockout_risk"):
+        if column in rows.columns:
+            bases.extend(float(count) for count in rows[column].astype(str).value_counts().tolist())
+    if {"current_inventory", "reorder_point"}.issubset(rows.columns):
+        inventory = pd.to_numeric(rows["current_inventory"], errors="coerce")
+        reorder = pd.to_numeric(rows["reorder_point"], errors="coerce")
+        comparable = inventory.notna() & reorder.notna()
+        short = comparable & (inventory <= reorder)
+        bases.append(float(short.sum()))
+        bases.append(float((comparable & ~short).sum()))
+    for left_name, right_name in COPILOT_DIFF_PAIRS:
+        if left_name not in rows.columns or right_name not in rows.columns:
+            continue
+        left = pd.to_numeric(rows[left_name], errors="coerce")
+        right = pd.to_numeric(rows[right_name], errors="coerce")
+        for a, b in zip(left.tolist(), right.tolist()):
+            if pd.isna(a) or pd.isna(b):
+                continue
+            if math.isfinite(float(a)) and math.isfinite(float(b)):
+                bases.append(abs(float(a) - float(b)))
+    return bases
+
+
+def check_answer_grounding(answer: str, rows: pd.DataFrame):
+    """Return 'grounded', or the numbers that are not in the supplied rows.
+
+    A number counts when it appears in a supplied cell or is a trivial
+    derivation: rounding to 0, 1, or 2 decimals, a fill rate written as a
+    percent, the row count, a column sum, or a within-row gap such as
+    on-hand minus reorder point.
+    """
+    numbers = _extract_numbers(answer)
+    if not numbers:
+        return "grounded"
+    bases = _base_numbers(rows if isinstance(rows, pd.DataFrame) else pd.DataFrame())
+    unverified = []
+    for number in numbers:
+        if any(_supports(number, base) for base in bases):
+            continue
+        if any(_nearly(number, earlier) for earlier in unverified):
+            continue
+        unverified.append(number)
+    if not unverified:
+        return "grounded"
+    return unverified
+
+
+def _mentioned_skus(frame: pd.DataFrame, question: str):
+    text = (question or "").upper()
+    found = set()
+    skus = sorted({str(sku).upper() for sku in frame["sku"].dropna()}, key=len, reverse=True)
+    for sku in skus:
+        if re.search(rf"(?<![A-Z0-9]){re.escape(sku)}(?![A-Z0-9])", text):
+            found.add(sku)
+            continue
+        tail = sku.split("-")[-1]
+        prefix = "-".join(sku.split("-")[:-1])
+        if prefix and tail.isdigit():
+            loose = rf"(?<![A-Z0-9]){re.escape(prefix)}[-\s]*0*{int(tail)}(?![A-Z0-9])"
+            if re.search(loose, text):
+                found.add(sku)
+    return found
+
+
+def _mentioned_classes(question: str):
+    found = set()
+    for pattern in _CLASS_PATTERNS:
+        for match in pattern.finditer(question or ""):
+            letter = next(group for group in match.groups() if group)
+            found.add(letter.upper())
+    return found
+
+
+def _risk_mask(frame: pd.DataFrame, question: str):
+    """Rows the question is asking about, or None when it never mentions risk."""
+    q = (question or "").lower()
+    if frame.empty:
+        return None
+    parts = []
+    if re.search(r"below\s+rop|\breorder\b|below\s+reorder|\bcritical\b", q):
+        if {"current_inventory", "reorder_point"}.issubset(frame.columns):
+            inventory = pd.to_numeric(frame["current_inventory"], errors="coerce")
+            reorder = pd.to_numeric(frame["reorder_point"], errors="coerce")
+            parts.append(inventory <= reorder)
+        elif "stockout_risk" in frame.columns:
+            parts.append(frame["stockout_risk"].astype(str).str.contains(r"High|CRITICAL", regex=True))
+    if re.search(r"\bhigh\b|run\s*out|runs\s+out|running\s+out|stock-?out|\brisk\b", q):
+        if "stockout_risk" in frame.columns:
+            parts.append(frame["stockout_risk"].astype(str).str.contains(r"High|CRITICAL", regex=True))
+    if re.search(r"\bmedium\b", q) and "stockout_risk" in frame.columns:
+        parts.append(frame["stockout_risk"].astype(str).str.contains("Medium", regex=False))
+    if re.search(r"\blow\s+risk\b", q) and "stockout_risk" in frame.columns:
+        parts.append(frame["stockout_risk"].astype(str).str.contains("Low", regex=False))
+    if not parts:
+        return None
+    mask = parts[0].fillna(False)
+    for part in parts[1:]:
+        mask = mask | part.fillna(False)
+    return mask.reindex(frame.index, fill_value=False)
+
+
+def _compact_rows(selected: pd.DataFrame) -> pd.DataFrame:
+    if selected is None or len(selected) == 0:
+        columns = [
+            column
+            for column in COPILOT_TABLE_COLUMNS
+            if selected is not None and column in selected.columns
+        ]
+        return pd.DataFrame(columns=columns)
+    columns = [column for column in COPILOT_TABLE_COLUMNS if column in selected.columns]
+    out = selected.loc[:, columns].copy().reset_index(drop=True)
+    for column, digits in COPILOT_ROUND.items():
+        if column not in out.columns:
+            continue
+        numbers = pd.to_numeric(out[column], errors="coerce").round(digits)
+        cleaned = []
+        for value in numbers.tolist():
+            if pd.isna(value):
+                cleaned.append(math.nan)
+                continue
+            number = float(value)
+            if math.isfinite(number):
+                cleaned.append(number)
+            elif column == "weeks_of_cover" and math.isinf(number):
+                # Keep the sentinel so the prompt can say "No demand" instead of a fake quantity.
+                cleaned.append(number)
+            else:
+                cleaned.append(math.nan)
+        out[column] = cleaned
+    return out
+
+
+def select_copilot_rows(frame: pd.DataFrame, question: str, limit: int = COPILOT_ROW_LIMIT) -> pd.DataFrame:
+    """Rows that can answer `question`.
+
+    SKU codes, ABC class, and risk words in the question are applied together.
+    A risk filter that matches nothing is dropped when a SKU or class was
+    named, so the model can say those items do not run out. With no signal,
+    the 15 highest-risk rows are used.
+    """
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "sku" not in frame.columns:
+        return _compact_rows(frame if isinstance(frame, pd.DataFrame) else pd.DataFrame())
+
+    skus = _mentioned_skus(frame, question)
+    classes = _mentioned_classes(question)
+    risk_mask = _risk_mask(frame, question)
+    selected = frame
+    recognized = False
+
+    if skus:
+        recognized = True
+        selected = selected.loc[selected["sku"].astype(str).str.upper().isin(skus)]
+
+    if classes and "abc_class" in selected.columns:
+        recognized = True
+        class_rows = selected.loc[selected["abc_class"].astype(str).str.upper().isin(classes)]
+        # A named SKU that is not in the requested class stays, so the answer
+        # can correct the class instead of switching to an unrelated top-15.
+        if not class_rows.empty or not skus:
+            selected = class_rows
+
+    if risk_mask is not None:
+        recognized = True
+        mask = risk_mask.reindex(selected.index, fill_value=False)
+        risk_rows = selected.loc[mask.to_numpy()]
+        if not risk_rows.empty or not (skus or classes):
+            selected = risk_rows
+
+    if not recognized:
+        selected = sort_risk_table(frame)
+    else:
+        selected = sort_risk_table(selected)
+    return _compact_rows(selected.head(limit))
+
+
+def _format_cell(column: str, value) -> str:
+    if isinstance(value, str):
+        return " ".join(value.split())
+    try:
+        if value is None or pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        return " ".join(str(value).split())
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return " ".join(str(value).split())
+    if not math.isfinite(number):
+        return "No demand" if math.isinf(number) else ""
+    digits = COPILOT_ROUND.get(column, 4)
+    rounded = round(number, digits)
+    if float(rounded).is_integer():
+        return str(int(rounded))
+    return f"{rounded:.{digits}f}".rstrip("0").rstrip(".")
+
+
+def copilot_table_text(rows: pd.DataFrame) -> str:
+    """Compact CSV of the rows Gemma is allowed to use."""
+    if rows is None or len(rows) == 0:
+        return "(no rows)"
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(list(rows.columns))
+    for _, row in rows.iterrows():
+        writer.writerow([_format_cell(column, row[column]) for column in rows.columns])
+    return buffer.getvalue().strip()
+
+
+def _copilot_prompt(question: str, rows: pd.DataFrame) -> str:
+    table = copilot_table_text(rows)
+    return f"""You are an inventory planner. Answer the question using ONLY the table below.
+Do not invent SKUs, quantities, dates, or risks. If the table does not contain the answer, say so.
+Name every SKU you use. Every number you mention must be copied from the table (rounding a value to a whole number is fine).
+
+Question: {question}
+
+Rows:
+{table}
+"""
+
+
+def present_copilot_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """Readable headers for the Rows used table in the Copilot tab."""
+    if rows is None or len(rows) == 0:
+        return pd.DataFrame()
+    shown = rows.copy()
+    if "weeks_of_cover" in shown.columns:
+        def _cover_label(value):
+            label = format_weeks_of_cover(value)
+            return "" if str(label).lower() == "nan" else label
+
+        shown["weeks_of_cover"] = shown["weeks_of_cover"].map(_cover_label)
+    rename = {key: RISK_BOARD_RENAME[key] for key in shown.columns if key in RISK_BOARD_RENAME}
+    return shown.rename(columns=rename)
+
+
 # ====================== COGNITIVE INTERACTIVE AGENT ======================
 class SupplyChainAgent:
     def __init__(self, data: pd.DataFrame):
         self.df = data
 
-    def query(self, question: str) -> str:
+    def query(self, question: str) -> CopilotReply:
+        """Answer a free-form question from the forecast, or fall back to keywords.
+
+        Gemma 2 sees only the rows selected for the question. The reply is
+        kept when every number in it is grounded in those rows. If Ollama is
+        down, the call fails, or any number does not check out, the original
+        keyword answer is returned with source "rule-based".
+        """
+        question = "" if question is None else str(question)
+        rows = select_copilot_rows(self.df, question)
+        keyword = self._keyword_answer(question)
+        try:
+            response = _gemma_chat([{"role": "user", "content": _copilot_prompt(question, rows)}])
+            message = (response or {}).get("message") or {}
+            content = str(message.get("content") or "").strip()
+            if not content:
+                raise RuntimeError("Gemma 2 returned an empty answer")
+            verdict = check_answer_grounding(content, rows)
+            if verdict != "grounded":
+                unverified = verdict if isinstance(verdict, list) else [verdict]
+                return CopilotReply(
+                    keyword,
+                    "rule-based",
+                    rows,
+                    unverified=unverified,
+                    error="ungrounded",
+                )
+            return CopilotReply(content, "grounded", rows)
+        except Exception as exc:
+            return CopilotReply(keyword, "rule-based", rows, error=str(exc))
+
+    def _keyword_answer(self, question: str) -> str:
         q = question.lower()
 
         if "critical" in q or "below rop" in q or "reorder" in q:
@@ -427,6 +840,8 @@ if __name__ == "__main__":
                     print("Logging out safely. Have a great shift! 📦")
                     break
                 if user_query.strip():
-                    print(agent.query(user_query))
+                    reply = agent.query(user_query)
+                    print(reply)
+                    print(f"[{reply.source}]")
             except (KeyboardInterrupt, EOFError):
                 break

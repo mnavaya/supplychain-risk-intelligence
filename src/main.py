@@ -35,6 +35,8 @@ if __name__ == "__main__":
                     print("Logging out safely. Have a great shift! 📦")
                     break
                 if user_query.strip():
-                    print(agent.query(user_query))
+                    reply = agent.query(user_query)
+                    print(reply)
+                    print(f"[{reply.source}]")
             except (KeyboardInterrupt, EOFError):
                 break

@@ -55,8 +55,8 @@ Exact steps:
 On the live app:
 
 - Weekly CSV defaults to `week_2026-04-13_demo.csv`. Click **Run analysis**. Leave **Generate LLM report** off.
-- Risk board, service levels, forecast accuracy, ABC, supply shock (sliders, charts, Monte Carlo, emergency orders), and the rule-based Copilot all run in the browser. No local model is required.
-- **Write scenario narrative** and the written report call Gemma 2 only if Ollama is on the same machine. On Community Cloud they stop within a few seconds and keep the calculated summary. They do not block the rest of the app.
+- Risk board, service levels, forecast accuracy, ABC, supply shock (sliders, charts, Monte Carlo, emergency orders), and the Copilot all run in the browser. No local model is required.
+- **Write scenario narrative**, the written report, and free-form Copilot questions call Gemma 2 only if Ollama is on the same machine. On Community Cloud the call stops within a few seconds. The Copilot then shows the original keyword answer with a **rule-based** badge. Nothing else waits on the model.
 - The file picker lists inventory CSVs only. Unrelated files that happen to sit in `data/weekly/` are skipped.
 
 ## What it does
@@ -65,7 +65,7 @@ On the live app:
 - Forecasts demand (Holt-Winters), computes safety stock & reorder points
 - ABC-classifies SKUs and flags stockout risk
 - Writes `outputs/latest_summary.csv` and `outputs/reports/Inventory_Health_Risk_Report.md`
-- Chat with a rule-based inventory copilot in the CLI or UI
+- Answers free-form copilot questions from a small slice of the forecast. Local Gemma 2 is used only when every number in the reply checks out; otherwise the original keyword answers are used.
 
 ## Demo data
 
@@ -90,6 +90,16 @@ python -m unittest discover -s tests -t .
 ```
 
 ## Changelog
+
+### Grounded copilot questions
+
+The Copilot tab accepts a normal question, such as "Which A-class items run out before their next delivery?"
+
+- The question is matched to forecast rows by SKU code, ABC class (A-class, class B), or risk words (run out, stockout, high risk, reorder, below ROP). Those filters combine. If the question names none of them, the 15 highest-risk rows are used.
+- Only that compact table is sent to local Gemma 2 (`gemma2:2b`) through the same 8-second helper as the shock narrative. The prompt tells the model to answer from the table and to name the SKUs it uses.
+- A grounding check reads every number in the reply. The number has to appear in the supplied rows, or be a trivial derivation: rounding to a whole number or one or two decimals, a fill rate written as a percent, a row count, a column total, or a within-row gap such as on-hand minus reorder point. The reply is then marked **grounded**.
+- If any number does not check out, Ollama is not running, or the call fails, the original keyword answer is shown instead and marked **rule-based**. The hosted Streamlit demo has no Ollama, so it stays on that path.
+- The Copilot tab shows the answer, the badge, and a collapsible **Rows used** table. The terminal copilot prints the same label after the answer.
 
 ### Forecast check, service levels, explainable risk, ABC summary
 
