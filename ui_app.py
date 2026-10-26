@@ -225,6 +225,28 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {
   border-radius: 10px;
 }
 
+/* Copilot source badge — cream / green pills stay readable on the dark chat panel. */
+.copilot-badge {
+  display: inline-block;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  line-height: 1.35;
+  margin: 0.1rem 0 0.45rem 0;
+}
+.copilot-badge.grounded {
+  background: #d9f5e5 !important;
+  color: #0b3b22 !important;
+  border: 1px solid #8fd4a8 !important;
+}
+.copilot-badge.rule {
+  background: #f4f1ea !important;
+  color: #0b0d10 !important;
+  border: 1px solid #f4f1ea !important;
+}
+
 [data-testid="stMarkdownContainer"] h1,
 [data-testid="stMarkdownContainer"] h2,
 [data-testid="stMarkdownContainer"] h3 {
@@ -428,10 +450,16 @@ def _render_copilot_turn(message: dict):
     """Answer, grounded / rule-based badge, and the rows sent to Gemma."""
     source = message.get("source")
     if source == "grounded":
-        st.badge("grounded", color="green")
+        st.markdown(
+            '<span class="copilot-badge grounded">grounded</span>',
+            unsafe_allow_html=True,
+        )
         st.caption("Gemma 2 answered from the rows below. Each number was checked against those rows.")
     elif source == "rule-based":
-        st.badge("rule-based", color="gray")
+        st.markdown(
+            '<span class="copilot-badge rule">rule-based</span>',
+            unsafe_allow_html=True,
+        )
         st.caption(
             "Rule-based answer. Gemma 2 was unavailable, or a number in its reply was not in the rows below."
         )
