@@ -15,8 +15,8 @@ from inventory_logic import (
     classify_abc,
     classify_cover_risk,
     describe_shock,
-    forecast_mean_demand,
     format_weeks_of_cover,
+    select_sku_forecast,
     sort_risk_table,
     weekly_series,
     z_for_service_level,
@@ -134,9 +134,10 @@ def forecast_and_stockout(
         current_inv = round(_latest_number(sku_data, "inventory_level", 0.0), 1)
         # Round before cover and days-of-supply so a displayed 0.0 forecast
         # takes the zero-demand path instead of dividing by a hidden fraction.
-        forecast_demand = round(
-            forecast_mean_demand(series["consumption"], forecast_weeks), 1
-        )
+        # Smooth and erratic SKUs stay on Holt-Winters. Intermittent and lumpy
+        # SKUs keep whichever of Holt-Winters and Croston SBA has the lower holdout MAE.
+        choice = select_sku_forecast(series, forecast_weeks)
+        forecast_demand = round(float(choice["forecast_weekly_demand"]), 1)
         weekly_std = (
             float(series["consumption"].std(ddof=1)) if len(series) > 1 else 0.0
         )
@@ -164,6 +165,12 @@ def forecast_and_stockout(
                 "sku": sku,
                 "current_inventory": current_inv,
                 "forecast_weekly_demand": forecast_demand,
+                "demand_pattern": choice["demand_pattern"],
+                "adi": choice["adi"],
+                "cv2": choice["cv2"],
+                "chosen_model": choice["chosen_model"],
+                "mae_holt_winters": choice["mae_holt_winters"],
+                "mae_sba": choice["mae_sba"],
                 "avg_weekly_demand": round(max(avg_weekly, 0.0), 4),
                 "weekly_demand_sd": round(max(weekly_std, 0.0), 4),
                 "lead_time_days": lead_time,

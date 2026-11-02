@@ -1,7 +1,8 @@
 """Inventory math shared by the pipeline, Streamlit app, and tests.
 
-Holt-Winters forecasts, service-level safety stock, weeks-of-cover alerts,
-and usage-value ABC all live here so the UI and the CLI call one implementation.
+Holt-Winters forecasts, Croston SBA for intermittent demand, service-level
+safety stock, weeks-of-cover alerts, and usage-value ABC all live here so
+the UI and the CLI call one implementation.
 """
 
 from __future__ import annotations
@@ -23,6 +24,18 @@ DEFAULT_SERVICE_LEVEL = "95%"
 
 ACCURACY_HOLDOUT_WEEKS = 4
 ACCURACY_MIN_TRAIN_WEEKS = 4
+
+# Syntetos, Boylan, and Croston (2005) demand-pattern cutoffs.
+# ADI is the average gap between weeks that actually have demand.
+# CV² is the squared coefficient of variation of those non-zero sizes.
+ADI_CUTOFF = 1.32
+CV2_CUTOFF = 0.49
+SBA_ALPHA = 0.1
+MODEL_HOLT_WINTERS = "Holt-Winters"
+MODEL_CROSTON_SBA = "Croston SBA"
+# Only these patterns are allowed to leave Holt-Winters.
+SBA_ELIGIBLE_PATTERNS = frozenset({"intermittent", "lumpy"})
+DEMAND_PATTERN_ORDER = ("smooth", "erratic", "intermittent", "lumpy")
 
 # Used only when a weekly file has no lead_time_days value.
 DEFAULT_LEAD_TIME_DAYS = 7
@@ -411,7 +424,15 @@ def format_risk_board(summary: pd.DataFrame) -> pd.DataFrame:
     if "weeks_of_cover" in board.columns:
         board["weeks_of_cover"] = board["weeks_of_cover"].map(format_weeks_of_cover)
     ordered = [column for column in RISK_BOARD_COLUMNS if column in board.columns]
-    hidden = {"z_score"}
+    hidden = {
+        "z_score",
+        "demand_pattern",
+        "adi",
+        "cv2",
+        "chosen_model",
+        "mae_holt_winters",
+        "mae_sba",
+    }
     leftovers = [
         column
         for column in board.columns
@@ -557,6 +578,115 @@ def forecast_mean_demand(consumption, horizon: int) -> float:
     return float(np.mean(holt_winters_forecast(values, horizon)))
 
 
+def _consumption_array(weekly_series) -> np.ndarray:
+    """One SKU's weekly demand, oldest week first. Missing values count as zero.
+
+    A DataFrame from `weekly_series` is accepted, and so is a plain sequence
+    of consumption numbers. Non-positive weeks are kept so the gaps stay visible.
+    """
+    if isinstance(weekly_series, pd.DataFrame):
+        if "consumption" not in weekly_series.columns:
+            raise ValueError("weekly series needs a consumption column")
+        frame = weekly_series
+        if "week" in frame.columns:
+            frame = frame.sort_values("week")
+        raw = frame["consumption"]
+    else:
+        raw = weekly_series
+    values = pd.to_numeric(pd.Series(raw), errors="coerce").to_numpy(dtype=float)
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def classify_demand_pattern(weekly_series) -> dict:
+    """Label one SKU with the Syntetos-Boylan rules.
+
+    ADI is the average number of weeks between non-zero demand weeks
+    (`mean` of the gaps between those weeks). CV² is the squared coefficient
+    of variation of the non-zero sizes, using the sample standard deviation.
+    Cutoffs are ADI 1.32 and CV² 0.49:
+
+    - smooth: ADI < 1.32 and CV² < 0.49
+    - erratic: ADI < 1.32 and CV² >= 0.49
+    - intermittent: ADI >= 1.32 and CV² < 0.49
+    - lumpy: ADI >= 1.32 and CV² >= 0.49
+
+    Edge cases, where those averages are not defined:
+    - All zeros (or an empty series): no interval and no size variation.
+      ADI is infinite, CV² is 0, and the label is intermittent.
+    - A single non-zero week: CV² is 0. ADI is the length of the series,
+      so one spike in a long history is not called smooth weekly demand.
+    """
+    values = _consumption_array(weekly_series)
+    demand_weeks = np.flatnonzero(values > 0)
+    n_demand = int(len(demand_weeks))
+    if n_demand == 0:
+        adi = math.inf
+        cv2 = 0.0
+    elif n_demand == 1:
+        adi = float(len(values))
+        cv2 = 0.0
+    else:
+        adi = float(np.mean(np.diff(demand_weeks.astype(float))))
+        sizes = values[demand_weeks]
+        mean_size = float(np.mean(sizes))
+        if mean_size <= 0:
+            cv2 = 0.0
+        else:
+            cv2 = float((np.std(sizes, ddof=1) / mean_size) ** 2)
+
+    if not math.isfinite(adi):
+        pattern = "intermittent"
+    elif adi < ADI_CUTOFF and cv2 < CV2_CUTOFF:
+        pattern = "smooth"
+    elif adi < ADI_CUTOFF:
+        pattern = "erratic"
+    elif cv2 < CV2_CUTOFF:
+        pattern = "intermittent"
+    else:
+        pattern = "lumpy"
+    return {"pattern": pattern, "adi": float(adi), "cv2": float(cv2)}
+
+
+def croston_sba_forecast(series, horizon: int, alpha: float = SBA_ALPHA) -> np.ndarray:
+    """Croston's method with the Syntetos-Boylan approximation.
+
+    Demand size and the gap between demand weeks are smoothed separately,
+    and only on weeks that have demand. The weekly rate is
+    `(1 - alpha / 2) * size / interval`, which is the SBA bias correction.
+    That rate is repeated for every week of the horizon. The result is
+    weekly demand, same units as Holt-Winters, and it is never negative.
+    An all-zero history forecasts zero.
+    """
+    values = _consumption_array(series)
+    horizon = int(horizon)
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+    alpha = float(alpha)
+    if not 0.0 < alpha <= 1.0:
+        raise ValueError("alpha must be between 0 and 1")
+
+    demand_weeks = np.flatnonzero(values > 0)
+    if len(demand_weeks) == 0:
+        return np.zeros(horizon, dtype=float)
+
+    size = float(values[demand_weeks[0]])
+    # Periods until the first demand, counting that demand week as 1.
+    interval = float(int(demand_weeks[0]) + 1)
+    previous = int(demand_weeks[0])
+    for index in demand_weeks[1:]:
+        gap = float(int(index) - previous)
+        observed = float(values[index])
+        size = size + alpha * (observed - size)
+        interval = interval + alpha * (gap - interval)
+        previous = int(index)
+
+    if interval <= 0:
+        rate = 0.0
+    else:
+        rate = (1.0 - alpha / 2.0) * (size / interval)
+    return np.repeat(max(rate, 0.0), horizon)
+
+
 def split_train_test(series: pd.DataFrame, holdout_weeks: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Hold out the latest weeks. Raises if any test week is also in training."""
     if holdout_weeks < 1:
@@ -624,6 +754,46 @@ def _winner(sku: str, mae_hw: float, mae_naive: float) -> tuple[str, str]:
     )
 
 
+def mean_absolute_error(actual, forecast) -> float:
+    """MAE of two equal-length weekly paths. Shared by the accuracy tab and SBA selection."""
+    observed = np.asarray(actual, dtype=float)
+    predicted = np.asarray(forecast, dtype=float)
+    if len(observed) == 0 or len(observed) != len(predicted):
+        raise ValueError("actual and forecast must be the same non-empty length")
+    return float(np.mean(np.abs(observed - predicted)))
+
+
+def _one_sku_weeks(weekly_series) -> pd.DataFrame:
+    """Week-sorted consumption for one SKU, duplicate weeks summed.
+
+    A bare sequence is given synthetic weekly timestamps so it can use the
+    same holdout split as a real weekly file.
+    """
+    if isinstance(weekly_series, pd.DataFrame) and "consumption" in weekly_series.columns:
+        keep = [column for column in ("week", "consumption") if column in weekly_series.columns]
+        frame = weekly_series.loc[:, keep].copy()
+        if "week" not in frame.columns:
+            frame["week"] = pd.date_range("2000-01-03", periods=len(frame), freq="W-MON")
+        frame["week"] = pd.to_datetime(frame["week"], errors="coerce")
+        frame["consumption"] = pd.to_numeric(frame["consumption"], errors="coerce").fillna(0.0)
+        frame = frame.dropna(subset=["week"])
+        if frame.empty:
+            return pd.DataFrame(columns=["week", "consumption"])
+        return (
+            frame.groupby("week", as_index=False)["consumption"]
+            .sum()
+            .sort_values("week")
+            .reset_index(drop=True)
+        )
+    values = _consumption_array(weekly_series)
+    return pd.DataFrame(
+        {
+            "week": pd.date_range("2000-01-03", periods=len(values), freq="W-MON"),
+            "consumption": values,
+        }
+    )
+
+
 def forecast_accuracy_check(
     df: pd.DataFrame,
     sku: str,
@@ -653,8 +823,8 @@ def forecast_accuracy_check(
     naive_value = float(train["consumption"].iloc[-1])
     naive = np.repeat(naive_value, holdout_weeks)
     actual = test["consumption"].to_numpy(dtype=float)
-    mae_hw = float(np.mean(np.abs(actual - hw)))
-    mae_naive = float(np.mean(np.abs(actual - naive)))
+    mae_hw = mean_absolute_error(actual, hw)
+    mae_naive = mean_absolute_error(actual, naive)
     winner, message = _winner(str(sku), mae_hw, mae_naive)
     detail = pd.DataFrame(
         {
@@ -678,6 +848,115 @@ def forecast_accuracy_check(
         "test_weeks": int(len(test)),
         "detail": detail,
     }
+
+
+def select_sku_forecast(
+    weekly_series,
+    horizon: int,
+    alpha: float = SBA_ALPHA,
+    holdout_weeks: int = ACCURACY_HOLDOUT_WEEKS,
+    min_train_weeks: int = ACCURACY_MIN_TRAIN_WEEKS,
+) -> dict:
+    """Pick the weekly forecast for one SKU and keep the holdout scores.
+
+    The pattern is measured on the whole history. The same holdout as the
+    accuracy check (latest weeks out, earlier weeks only for fitting) scores
+    Holt-Winters and Croston SBA. Intermittent and lumpy SKUs keep the lower
+    MAE. A tie stays on Holt-Winters. Smooth and erratic SKUs stay on
+    Holt-Winters even when SBA is closer. Both MAEs are still recorded.
+
+    The shipped forecast is refit on every observed week, not on the
+    holdout training slice. Short histories skip the contest and stay on
+    Holt-Winters, with both MAEs left as NaN.
+    """
+    horizon = int(horizon)
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+    frame = _one_sku_weeks(weekly_series)
+    classified = classify_demand_pattern(frame["consumption"] if len(frame) else [])
+    chosen = MODEL_HOLT_WINTERS
+    mae_hw = math.nan
+    mae_sba = math.nan
+    needed = int(holdout_weeks) + int(min_train_weeks)
+    if len(frame) >= needed:
+        train, test = split_train_test(frame, int(holdout_weeks))
+        actual = test["consumption"].to_numpy(dtype=float)
+        hw = holt_winters_forecast(train["consumption"], int(holdout_weeks))
+        sba = croston_sba_forecast(train["consumption"], int(holdout_weeks), alpha=alpha)
+        mae_hw = mean_absolute_error(actual, hw)
+        mae_sba = mean_absolute_error(actual, sba)
+        if classified["pattern"] in SBA_ELIGIBLE_PATTERNS and mae_sba < mae_hw:
+            chosen = MODEL_CROSTON_SBA
+
+    if chosen == MODEL_CROSTON_SBA:
+        rate = croston_sba_forecast(frame["consumption"], horizon, alpha=alpha)
+        forecast_value = float(np.mean(rate))
+    else:
+        forecast_value = forecast_mean_demand(frame["consumption"], horizon)
+    return {
+        "demand_pattern": classified["pattern"],
+        "adi": classified["adi"],
+        "cv2": classified["cv2"],
+        "chosen_model": chosen,
+        "mae_holt_winters": mae_hw,
+        "mae_sba": mae_sba,
+        "forecast_weekly_demand": forecast_value,
+    }
+
+
+def mean_mae_by_pattern(summary: pd.DataFrame) -> pd.DataFrame:
+    """Mean holdout MAE of Holt-Winters and Croston SBA for each demand pattern.
+
+    SKU count includes series that were too short to score. The means ignore
+    those rows. Every pattern is listed, including ones with no SKUs, so the
+    table lines up with the four quadrants.
+    """
+    rows = []
+    frame = summary if isinstance(summary, pd.DataFrame) else pd.DataFrame()
+    has_pattern = "demand_pattern" in frame.columns
+    for pattern in DEMAND_PATTERN_ORDER:
+        if has_pattern:
+            part = frame[frame["demand_pattern"] == pattern]
+        else:
+            part = frame.iloc[0:0]
+        mae_hw = np.nan
+        mae_sba = np.nan
+        if len(part) and {"mae_holt_winters", "mae_sba"}.issubset(part.columns):
+            hw = pd.to_numeric(part["mae_holt_winters"], errors="coerce")
+            sba = pd.to_numeric(part["mae_sba"], errors="coerce")
+            scored = hw.notna() & sba.notna()
+            if bool(scored.any()):
+                mae_hw = float(hw[scored].mean())
+                mae_sba = float(sba[scored].mean())
+        rows.append(
+            {
+                "pattern": pattern,
+                "skus": int(len(part)),
+                "mae_holt_winters": mae_hw,
+                "mae_sba": mae_sba,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def format_pattern_mae(summary: pd.DataFrame) -> pd.DataFrame:
+    """Small display table: mean holdout MAE by pattern. Floats stay numeric."""
+    table = mean_mae_by_pattern(summary)
+    display = pd.DataFrame(
+        {
+            "Pattern": table["pattern"].str.capitalize(),
+            "SKUs": table["skus"].astype(int),
+            "Holt-Winters MAE": table["mae_holt_winters"].map(
+                lambda value: np.nan if pd.isna(value) else round(float(value), 2)
+            ),
+            "Croston SBA MAE": table["mae_sba"].map(
+                lambda value: np.nan if pd.isna(value) else round(float(value), 2)
+            ),
+        }
+    )
+    for column in ("Holt-Winters MAE", "Croston SBA MAE"):
+        display[column] = pd.to_numeric(display[column], errors="coerce")
+    return display
 
 
 def accuracy_display_table(result: dict) -> pd.DataFrame:

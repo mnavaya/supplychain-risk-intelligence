@@ -1,9 +1,12 @@
 import altair as alt
+import numpy as np
 import streamlit as st
 import pandas as pd
 from pathlib import Path
 
 from inventory_logic import (
+    ADI_CUTOFF,
+    CV2_CUTOFF,
     DEFAULT_SERVICE_LEVEL,
     MONTE_CARLO_RUNS,
     SERVICE_LEVELS,
@@ -14,6 +17,7 @@ from inventory_logic import (
     eligible_forecast_skus,
     forecast_accuracy_check,
     format_abc_summary,
+    format_pattern_mae,
     format_risk_board,
     format_service_snapshot,
     format_shock_table,
@@ -417,6 +421,84 @@ def _shock_heatmap(shock: pd.DataFrame) -> alt.Chart:
     return _dark_chart(chart)
 
 
+def _demand_pattern_chart(summary: pd.DataFrame) -> alt.Chart:
+    """ADI against CV², one dot per SKU, with the Syntetos-Boylan cutoffs.
+
+    Dashed lines split the plane into smooth, erratic, intermittent, and lumpy.
+    Dots are colored by the model the holdout kept.
+    """
+    plot = summary.loc[:, ["sku", "adi", "cv2", "chosen_model", "demand_pattern"]].copy()
+    plot["adi"] = pd.to_numeric(plot["adi"], errors="coerce")
+    plot["cv2"] = pd.to_numeric(plot["cv2"], errors="coerce")
+    plot["sku"] = plot["sku"].astype(str)
+    finite = np.isfinite(plot["adi"].to_numpy(dtype=float)) & np.isfinite(plot["cv2"].to_numpy(dtype=float))
+    plot = plot.loc[finite].reset_index(drop=True)
+
+    x_max = ADI_CUTOFF * 2
+    y_max = CV2_CUTOFF * 2
+    if len(plot):
+        x_max = max(float(plot["adi"].max()) * 1.08, x_max)
+        y_max = max(float(plot["cv2"].max()) * 1.15, y_max)
+    x_scale = alt.Scale(domain=[0, x_max], nice=False, zero=True)
+    y_scale = alt.Scale(domain=[0, y_max], nice=False, zero=True)
+    x_axis = alt.X(
+        "adi:Q",
+        title="ADI (average interval between demand weeks)",
+        scale=x_scale,
+    )
+    y_axis = alt.Y(
+        "cv2:Q",
+        title="CV² (squared coefficient of variation)",
+        scale=y_scale,
+    )
+
+    rules = alt.Chart(pd.DataFrame({"adi": [ADI_CUTOFF], "cv2": [CV2_CUTOFF]}))
+    vertical = rules.mark_rule(strokeDash=[6, 4], color="#f5f6f7", strokeWidth=1.25).encode(x=x_axis)
+    horizontal = rules.mark_rule(strokeDash=[6, 4], color="#f5f6f7", strokeWidth=1.25).encode(y=y_axis)
+    labels = pd.DataFrame(
+        [
+            {"adi": ADI_CUTOFF / 2, "cv2": CV2_CUTOFF / 2, "quadrant": "Smooth"},
+            {"adi": ADI_CUTOFF / 2, "cv2": (CV2_CUTOFF + y_max) / 2, "quadrant": "Erratic"},
+            {"adi": (ADI_CUTOFF + x_max) / 2, "cv2": CV2_CUTOFF / 2, "quadrant": "Intermittent"},
+            {"adi": (ADI_CUTOFF + x_max) / 2, "cv2": (CV2_CUTOFF + y_max) / 2, "quadrant": "Lumpy"},
+        ]
+    )
+    names = (
+        alt.Chart(labels)
+        .mark_text(color="#9aa6b5", fontSize=13, fontWeight=600)
+        .encode(x=x_axis, y=y_axis, text="quadrant:N")
+    )
+    present = [name for name in ("Holt-Winters", "Croston SBA") if len(plot) and (plot["chosen_model"] == name).any()]
+    if not present:
+        present = ["Holt-Winters", "Croston SBA"]
+    palette = {"Holt-Winters": "#8ec8ff", "Croston SBA": "#f0b429"}
+    points = (
+        alt.Chart(plot)
+        .mark_circle(size=70, opacity=0.9)
+        .encode(
+            x=x_axis,
+            y=y_axis,
+            color=alt.Color(
+                "chosen_model:N",
+                title="Chosen model",
+                scale=alt.Scale(domain=present, range=[palette[name] for name in present]),
+            ),
+            tooltip=[
+                alt.Tooltip("sku:N", title="SKU"),
+                alt.Tooltip("demand_pattern:N", title="Pattern"),
+                alt.Tooltip("chosen_model:N", title="Chosen model"),
+                alt.Tooltip("adi:Q", title="ADI", format=".2f"),
+                alt.Tooltip("cv2:Q", title="CV²", format=".2f"),
+            ],
+        )
+    )
+    chart = (vertical + horizontal + names + points).properties(
+        height=340,
+        title="Demand pattern (Syntetos-Boylan)",
+    )
+    return _dark_chart(chart)
+
+
 def _accuracy_for(raw_df: pd.DataFrame, sku: str, source_file: str):
     """Fit the holdout once per file and SKU, not on every sidebar tweak."""
     key = (source_file, sku, id(raw_df))
@@ -674,6 +756,30 @@ with tabs[1]:
             st.caption("Sliders changed. Write the narrative again to refresh the Gemma 2 note.")
 
 with tabs[2]:
+    st.markdown("##### Demand patterns")
+    st.caption(
+        "Each SKU is placed with the Syntetos-Boylan cutoffs: ADI 1.32 (vertical) and CV² 0.49 (horizontal). "
+        "Smooth is the lower left, erratic the upper left, intermittent the lower right, and lumpy the upper right. "
+        "Smooth and erratic SKUs stay on Holt-Winters. Intermittent and lumpy SKUs keep whichever of "
+        "Holt-Winters and Croston SBA has the lower 4-week holdout MAE. The dot color is that choice, and the hover shows the SKU."
+    )
+    pattern_columns = {"sku", "adi", "cv2", "demand_pattern", "chosen_model", "mae_holt_winters", "mae_sba"}
+    if not pattern_columns.issubset(summary_df.columns):
+        st.caption("Re-run the analysis to classify demand. A saved summary from an older run does not include ADI or CV².")
+    else:
+        chart_col, table_col = st.columns([1.35, 0.85], vertical_alignment="center")
+        chart_col.altair_chart(_demand_pattern_chart(summary_df), use_container_width=True)
+        table_col.markdown("**Mean holdout MAE by pattern**")
+        table_col.dataframe(
+            format_pattern_mae(summary_df),
+            use_container_width=True,
+            hide_index=True,
+        )
+        table_col.caption(
+            "MAE is the mean absolute error on the last 4 weeks, averaged across SKUs in that quadrant. "
+            "Croston SBA is scored everywhere and is only allowed to win for intermittent and lumpy demand."
+        )
+
     st.markdown("##### Forecast accuracy check")
     st.caption(
         "For a frequently sold SKU, the last 4 weeks are held out. "

@@ -9,6 +9,8 @@ A lightweight, fully **local** pipeline designed for Open Healthcare’s testing
 
 The system ingests weekly CSV files containing inventory levels, consumption, lead times, vendor fill rates, and SKU metadata. It forecasts demand, computes safety stock and reorder points, scores stockout risk, and can generate an actionable **Inventory Health & Risk Report** with a local LLM.
 
+Intermittent and lumpy SKUs can use Croston's method with the Syntetos-Boylan correction when that beats Holt-Winters on a holdout. A LinkedIn reader asked how the forecast should treat intermittent demand, which is what prompted the comparison.
+
 ## Setup
 
 ```bash
@@ -109,3 +111,12 @@ The Supply shock tab is the planning sandbox. The view remembers which tab is op
 - Stockout probability is a 500-run Monte Carlo. Each week is a draw from a normal distribution centered on the shocked forecast, with the SKU's historical weekly standard deviation, and floored at zero. A run counts as a stockout when demand uses up on-hand stock before the delayed replenishment arrives.
 - **Write scenario narrative** asks local Gemma 2 (`gemma2:2b`) for two short paragraphs. If Ollama is not running, the call times out in a few seconds, the tab keeps the calculated summary, and it says the model was unavailable.
 - **Public demo.** `requirements.txt`, `runtime.txt` (`python-3.12`), and `.streamlit/config.toml` are set for Streamlit Community Cloud. The entry point is `ui_app.py`, the sample file ships in the repo, and a missing Gemma model does not block startup or the shock simulator. See **Deploy the frontend** above.
+
+### Intermittent demand
+
+Each SKU is classified with the Syntetos-Boylan cutoffs: ADI 1.32 and CV² 0.49. ADI is the average gap between weeks with demand, and CV² is the squared coefficient of variation of those non-zero sizes. The four labels are smooth, erratic, intermittent, and lumpy.
+
+- Smooth and erratic SKUs stay on Holt-Winters.
+- Intermittent and lumpy SKUs are scored on the same 4-week holdout as the accuracy check. Croston's method with the SBA factor `(1 - alpha / 2)` (alpha 0.1) is fit in NumPy, and the SKU keeps whichever model has the lower MAE.
+- The Forecast accuracy tab plots ADI against CV², one dot per SKU colored by the chosen model, with dashed lines at the two cutoffs. Beside it, a small table shows mean holdout MAE by pattern for Holt-Winters and Croston SBA. Hover a dot to see the SKU.
+- A series of all zeros is labeled intermittent. A single non-zero week uses the series length as its ADI and a CV² of 0, so one spike in a long history is not called smooth.
