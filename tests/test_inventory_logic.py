@@ -21,14 +21,18 @@ from inventory_logic import (  # noqa: E402
     attach_unit_cost,
     classify_abc,
     classify_cover_risk,
+    classify_demand_pattern,
     compute_reorder_point,
     compute_safety_stock,
+    croston_sba_forecast,
     describe_shock,
     effective_weekly_demand,
     eligible_forecast_skus,
     emergency_order_quantity,
     forecast_accuracy_check,
+    forecast_mean_demand,
     format_abc_summary,
+    format_pattern_mae,
     format_risk_board,
     format_shock_table,
     holt_winters_forecast,
@@ -37,6 +41,7 @@ from inventory_logic import (  # noqa: E402
     risk_heatmap_frame,
     risk_label_from_cover,
     sample_unit_cost,
+    select_sku_forecast,
     simulate_supply_shock,
     sort_risk_table,
     split_train_test,
@@ -173,6 +178,140 @@ class ForecastAccuracyTests(unittest.TestCase):
         backtest = backtest_forecast(frame, "SKU-A", forecast_horizon=4)
         self.assertEqual(backtest["status"], "Success")
         self.assertIn("MAE_naive", backtest)
+
+
+class IntermittentDemandTests(unittest.TestCase):
+    def test_mostly_zero_series_is_intermittent_with_a_nonzero_sba_forecast(self):
+        series = [0, 0, 0, 4, 0, 0, 0, 0, 5, 0, 0, 0]
+        classified = classify_demand_pattern(series)
+        self.assertEqual(classified["pattern"], "intermittent")
+        self.assertGreaterEqual(classified["adi"], 1.32)
+        self.assertLess(classified["cv2"], 0.49)
+        # Gap between the two demand weeks (indexes 3 and 8).
+        self.assertAlmostEqual(classified["adi"], 5.0)
+
+        forecast = croston_sba_forecast(series, horizon=4)
+        self.assertEqual(len(forecast), 4)
+        self.assertTrue(np.all(forecast > 0))
+
+        # One spike has no second demand to measure, so CV² is 0 and ADI is the length.
+        spike = classify_demand_pattern([0, 0, 0, 8, 0, 0])
+        self.assertEqual(spike["pattern"], "intermittent")
+        self.assertAlmostEqual(spike["adi"], 6.0)
+        self.assertEqual(spike["cv2"], 0.0)
+        self.assertTrue(np.all(croston_sba_forecast([0, 0, 0, 8, 0, 0], 2) > 0))
+
+        quiet = classify_demand_pattern([0, 0, 0, 0])
+        self.assertEqual(quiet["pattern"], "intermittent")
+        self.assertTrue(np.isinf(quiet["adi"]))
+        self.assertEqual(quiet["cv2"], 0.0)
+        self.assertTrue(np.all(croston_sba_forecast([0, 0, 0, 0], horizon=3) == 0))
+
+    def test_steady_series_is_smooth(self):
+        series = [10] * 16
+        classified = classify_demand_pattern(series)
+        self.assertEqual(classified["pattern"], "smooth")
+        self.assertAlmostEqual(classified["adi"], 1.0)
+        self.assertAlmostEqual(classified["cv2"], 0.0)
+        # alpha 0.1 → SBA factor 0.95, and every gap is one week, so the rate is 9.5.
+        self.assertTrue(np.allclose(croston_sba_forecast(series, 4, alpha=0.1), 9.5))
+
+    def test_erratic_and_lumpy_use_the_same_cutoffs(self):
+        erratic = classify_demand_pattern([1, 20, 1, 25, 2, 30, 1, 22])
+        self.assertEqual(erratic["pattern"], "erratic")
+        self.assertLess(erratic["adi"], 1.32)
+        self.assertGreaterEqual(erratic["cv2"], 0.49)
+
+        lumpy = classify_demand_pattern([0, 0, 1, 0, 0, 20, 0, 0, 1, 0, 0, 30])
+        self.assertEqual(lumpy["pattern"], "lumpy")
+        self.assertGreaterEqual(lumpy["adi"], 1.32)
+        self.assertGreaterEqual(lumpy["cv2"], 0.49)
+
+    def test_smooth_stays_on_holt_winters_even_when_sba_is_closer(self):
+        demands = [10] * 16
+
+        def fake_hw(consumption, horizon):
+            return np.full(horizon, 100.0)
+
+        def fake_sba(series, horizon, alpha=0.1):
+            return np.full(horizon, 10.0)
+
+        with patch("inventory_logic.holt_winters_forecast", fake_hw), patch(
+            "inventory_logic.croston_sba_forecast", fake_sba
+        ):
+            choice = select_sku_forecast(demands, horizon=4)
+
+        self.assertEqual(choice["demand_pattern"], "smooth")
+        self.assertEqual(choice["chosen_model"], "Holt-Winters")
+        self.assertLess(choice["mae_sba"], choice["mae_holt_winters"])
+
+    def test_intermittent_keeps_the_lower_holdout_mae_and_hides_test_weeks(self):
+        demands = [0, 0, 4, 0, 0, 4, 0, 0, 5, 0, 0, 4, 0, 0, 4, 0]
+        self.assertEqual(classify_demand_pattern(demands)["pattern"], "intermittent")
+        seen = {"hw": [], "sba": []}
+
+        def fake_hw(consumption, horizon):
+            seen["hw"].append([float(value) for value in consumption])
+            return np.full(horizon, 10.0)
+
+        def fake_sba(series, horizon, alpha=0.1):
+            seen["sba"].append([float(value) for value in series])
+            return np.full(horizon, 1.0)
+
+        with patch("inventory_logic.holt_winters_forecast", fake_hw), patch(
+            "inventory_logic.croston_sba_forecast", fake_sba
+        ):
+            choice = select_sku_forecast(demands, horizon=4)
+
+        train = demands[:-4]
+        self.assertEqual(seen["hw"], [[float(value) for value in train]])
+        self.assertEqual(seen["sba"][0], [float(value) for value in train])
+        self.assertEqual(len(seen["hw"][0]), len(demands) - 4)
+        self.assertEqual(choice["chosen_model"], "Croston SBA")
+        self.assertLess(choice["mae_sba"], choice["mae_holt_winters"])
+        # Winner is refit on the full history, not frozen on the holdout slice.
+        self.assertEqual(seen["sba"][-1], [float(value) for value in demands])
+        self.assertAlmostEqual(choice["forecast_weekly_demand"], 1.0)
+
+    def test_pipeline_exposes_pattern_and_both_maes(self):
+        steady = [10, 11, 10, 12, 11, 10, 13, 11, 12, 10, 11, 12]
+        sparse = [0, 0, 4, 0, 0, 4, 0, 0, 5, 0, 0, 4]
+        frame = pd.concat(
+            [_history("SKU-SMOOTH", demands=steady), _history("SKU-SPARSE", demands=sparse)],
+            ignore_index=True,
+        )
+        summary = forecast_and_stockout(frame, forecast_weeks=4, service_level="95%")
+        by_sku = summary.set_index("sku")
+
+        smooth = by_sku.loc["SKU-SMOOTH"]
+        self.assertEqual(smooth["demand_pattern"], "smooth")
+        self.assertEqual(smooth["chosen_model"], "Holt-Winters")
+        self.assertEqual(
+            smooth["forecast_weekly_demand"],
+            round(forecast_mean_demand(steady, 4), 1),
+        )
+        self.assertGreaterEqual(smooth["mae_holt_winters"], 0)
+        self.assertGreaterEqual(smooth["mae_sba"], 0)
+
+        intermittent = by_sku.loc["SKU-SPARSE"]
+        self.assertEqual(intermittent["demand_pattern"], "intermittent")
+        if intermittent["mae_sba"] < intermittent["mae_holt_winters"]:
+            self.assertEqual(intermittent["chosen_model"], "Croston SBA")
+        else:
+            self.assertEqual(intermittent["chosen_model"], "Holt-Winters")
+
+        table = format_pattern_mae(summary)
+        self.assertEqual(list(table["Pattern"]), ["Smooth", "Erratic", "Intermittent", "Lumpy"])
+        self.assertEqual(int(table.loc[table["Pattern"] == "Smooth", "SKUs"].iloc[0]), 1)
+        self.assertEqual(int(table.loc[table["Pattern"] == "Intermittent", "SKUs"].iloc[0]), 1)
+        import pyarrow as pa
+
+        pa.Table.from_pandas(table)
+        # Pattern columns stay off the risk board; the demand section reads them from the summary.
+        board = format_risk_board(summary)
+        self.assertNotIn("demand_pattern", board.columns)
+        self.assertNotIn("ADI", board.columns)
+        self.assertIn("SKU", board.columns)
 
 
 class ServiceLevelTests(unittest.TestCase):
