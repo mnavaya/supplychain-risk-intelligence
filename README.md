@@ -41,7 +41,7 @@ Legacy paths still work: `python src/main.py` and `streamlit run src/ui_app.py`.
 
 ## Deploy the frontend (Streamlit Community Cloud)
 
-The public demo is `streamlit run ui_app.py`. Nothing else has to be started. The bundled sample file is `data/weekly/week_2026-04-13_demo.csv` (50 SKUs). The app does not fit a model until you click **Run analysis**, so the first page is ready as soon as Cloud finishes installing dependencies. `requirements.txt` pins the versions this repo was tested with, and `runtime.txt` asks for Python 3.12. No secrets and no API keys.
+The public demo is `streamlit run ui_app.py`. Nothing else has to be started. The bundled sample file is `data/weekly/week_2026-04-13_demo.csv` (61 SKUs). The app does not fit a model until you click **Run analysis**, so the first page is ready as soon as Cloud finishes installing dependencies. `requirements.txt` pins the versions this repo was tested with, and `runtime.txt` asks for Python 3.12. No secrets and no API keys.
 
 Exact steps:
 
@@ -71,7 +71,7 @@ On the live app:
 
 ## Demo data
 
-`data/weekly/week_2026-04-13_demo.csv` is included for a quick walkthrough of risk flags and the copilot. It has on-hand stock (`inventory_level`) and supplier lead time (`lead_time_days`) but no unit cost. When `unit_cost` is missing, the app fills a documented sample price so ABC still runs:
+`data/weekly/week_2026-04-13_demo.csv` is included for a quick walkthrough of risk flags and the copilot. SKU-00001 through SKU-00050 are the original smooth series. SKU-00051 through SKU-00061 are spare-part intermittent demand, lumpy bulk orders, and erratic weekly demand, appended by `generate_large_dataset.py` without changing the first 50. The file has on-hand stock (`inventory_level`) and supplier lead time (`lead_time_days`) but no unit cost. When `unit_cost` is missing, the app fills a documented sample price so ABC still runs:
 
 | Category | Sample unit cost (USD) |
 | --- | --- |
@@ -118,5 +118,5 @@ Each SKU is classified with the Syntetos-Boylan cutoffs: ADI 1.32 and CV² 0.49.
 
 - Smooth and erratic SKUs stay on Holt-Winters.
 - Intermittent and lumpy SKUs are scored on the same 4-week holdout as the accuracy check. Croston's method with the SBA factor `(1 - alpha / 2)` (alpha 0.1) is fit in NumPy, and the SKU keeps whichever model has the lower MAE.
-- The Forecast accuracy tab plots ADI against CV², one dot per SKU colored by the chosen model, with dashed lines at the two cutoffs. Beside it, a small table shows mean holdout MAE by pattern for Holt-Winters and Croston SBA. Hover a dot to see the SKU.
+- The Forecast accuracy tab plots ADI against CV², one dot per SKU colored by the chosen model, with dashed lines at the two cutoffs. Beside it, a small table shows mean holdout MAE by pattern for Holt-Winters and Croston SBA. Hover a dot to see the SKU. The demo file's added SKUs sit in the intermittent, lumpy, and erratic quadrants; the original 50 stay smooth.
 - A series of all zeros is labeled intermittent. A single non-zero week uses the series length as its ADI and a CV² of 0, so one spike in a long history is not called smooth.
